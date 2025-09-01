@@ -28,6 +28,12 @@ models:
     embedding_model: "text-embedding-3-small"
     embedding_dim: 1536
 
+# --- Configurações de Lotes (Batch API) ---
+batch_processing:
+  # Limite total de tokens por ficheiro de lote (JSONL)
+  # Ajuste conforme a sua necessidade/cota. Padrão seguro: 2 milhões.
+  token_limit_per_batch: 2000000
+
 # --- Estratégias de Chunking ---
 # Defina aqui as estratégias que serão aplicadas durante a indexação.
 # O nome (ex: 'pages_800x120') será usado para criar a tabela no banco.
