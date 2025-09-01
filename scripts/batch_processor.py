@@ -75,9 +75,9 @@ def retrieve_and_insert(
     try:
         # 2) Carrega resultados (embeddings) e metadados
         results_content = processor.get_results(result_file_id)
-        results = [json.loads(line) for line in results_content.strip().split("\n")]
+        results = [json.loads(line) for line in results_content.strip().split("\n") if line.strip()]
         metadata = [
-            json.loads(line) for line in metadata_file.read_text().strip().split("\n")
+            json.loads(line) for line in metadata_file.read_text().strip().split("\n") if line.strip()
         ]
 
         if len(results) != len(metadata):
@@ -88,9 +88,14 @@ def retrieve_and_insert(
                 meta=len(metadata),
             )
 
+        # Indexa metadados por chave estável para casar com os resultados
+        def _best_meta_key(m: dict):
+            return m.get("id") or m.get("chunk_id") or m.get("cid")
+        meta_by_key = {k: m for m in metadata if (k := _best_meta_key(m))}
+
         # 3) Conecta no Postgres via PG_DSN do .env
-        dsn = os.getenv("PG_DSN")
-        if not dsn:
+        dsn = _require_env("PG_DSN")
+        if False and not dsn:
             raise RuntimeError(
                 "Variável de ambiente PG_DSN não definida. Verifique seu .env."
             )
@@ -102,11 +107,21 @@ def retrieve_and_insert(
         chunks_prefix = db_cfg.get("chunks_prefix", "chunks")
 
         # 4) Agrupa linhas por tabela
-        from collections import defaultdict
 
         rows_by_table = defaultdict(list)
+        matched = 0
 
-        for meta, result in zip(metadata, results):
+        for idx, result in enumerate(results):
+            # Resolve metadado correspondente priorizando custom_id/id
+            custom_id = result.get("custom_id") or result.get("id")
+            meta = meta_by_key.get(custom_id)
+            if meta is None:
+                if idx < len(metadata):
+                    meta = metadata[idx]
+                    log("batch.retrieve.match_fallback", index=idx)
+                else:
+                    log("batch.retrieve.unmatched_result", custom_id=custom_id)
+                    continue
             # extrai embedding do retorno batch
             emb = (
                 result.get("response", {})
@@ -165,6 +180,12 @@ def retrieve_and_insert(
                 vec,
             )
             rows_by_table[table].append(row)
+            matched += 1
+
+        if matched == 0:
+            log("batch.retrieve.nothing_to_insert", batch_id=batch_id)
+            print(f"[yellow]Nenhuma linha válida para inserir do lote {batch_id}.[/yellow]")
+            return False
 
         # 5) Insere por tabela, usando (cursor, tabela, linhas) e commit
         total = 0
@@ -176,8 +197,7 @@ def retrieve_and_insert(
             total += len(linhas)
             log("batch.retrieve.inserted", table=tabela, rows=len(linhas))
 
-        cur.close()
-        conn.close()
+        # conexões serão fechadas no finally
 
         log("batch.retrieve.success", batch_id=batch_id, count=total)
         print(
@@ -193,11 +213,15 @@ def retrieve_and_insert(
         return False
 
     finally:
-        # limpa metadados locais
+        # garante fechamento de recursos de DB
         try:
-            metadata_file.unlink()
-        except OSError as e:
-            log("cleanup.error", file=str(metadata_file), error=str(e))
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def start_process(args, config):
@@ -205,6 +229,17 @@ def start_process(args, config):
     output_dir = Path("out/batch")
     output_dir.mkdir(exist_ok=True, parents=True)
     processor = OpenAIBatchProcessor()
+
+    # diretório para armazenar metadados em caso de falha
+    failed_dir = output_dir / "failed"
+    failed_dir.mkdir(exist_ok=True, parents=True)
+
+    # validação do modelo de embeddings
+    embedding_model = config.get("models", {}).get("openai", {}).get("embedding_model")
+    if not embedding_model:
+        log("batch.config.error", missing="models.openai.embedding_model")
+        print("[bold red]Config ausente: models.openai.embedding_model[/bold red]")
+        return
 
     log(
         "batch.process.start",
@@ -225,6 +260,7 @@ def start_process(args, config):
 
     active_batches = {}
     pending_batches = list(batch_files)
+    enqueue_errors = defaultdict(int)
 
     # [CORREÇÃO] Define um limite de concorrência para evitar sobrecarregar a API
     MAX_CONCURRENT_BATCHES = 1
@@ -237,24 +273,44 @@ def start_process(args, config):
                 input_file = next_batch["input_file"]
                 metadata_file = next_batch["metadata_file"]
 
-                log("batch.process.uploading", file=str(input_file))
-                print(f"\nA enviar o ficheiro do lote: {input_file.name}...")
-                file_id = processor.upload_file(input_file)
+                try:
+                    log("batch.process.uploading", file=str(input_file))
+                    print(f"\nA enviar o ficheiro do lote: {input_file.name}...")
+                    file_id = processor.upload_file(input_file)
 
-                log("batch.process.creating_batch", file_id=file_id)
-                batch_id = processor.create_batch(
-                    file_id, config["models"]["openai"]["embedding_model"]
-                )
-                print(
-                    f"Lote [bold cyan]{batch_id}[/bold cyan] criado e em processamento."
-                )
-                active_batches[batch_id] = {
-                    "metadata_file": metadata_file,
-                    "status": "in_progress",
-                }
+                    log("batch.process.creating_batch", file_id=file_id)
+                    batch_id = processor.create_batch(file_id, embedding_model)
+                    print(
+                        f"Lote [bold cyan]{batch_id}[/bold cyan] criado e em processamento."
+                    )
+                    active_batches[batch_id] = {
+                        "metadata_file": metadata_file,
+                        "status": "in_progress",
+                    }
+                except Exception as e:
+                    # controla tentativas de enfileirar
+                    key = str(metadata_file)
+                    enqueue_errors[key] += 1
+                    attempts = enqueue_errors[key]
+                    log("batch.process.enqueue_error", file=key, error=str(e), attempts=attempts)
+                    print(
+                        f"[yellow]Falha ao enfileirar lote: {e}. Tentativa {attempts}/3[/yellow]"
+                    )
+                    if attempts < 3:
+                        pending_batches.append(next_batch)
+                    else:
+                        try:
+                            target = failed_dir / f"{metadata_file.stem}__enqueue_failed.jsonl"
+                            if metadata_file.exists():
+                                metadata_file.replace(target)
+                            print(f"[red]Metadados movidos para falhas: {target.name}[/red]")
+                        except Exception as me:
+                            log("batch.process.move_failed_meta_error", file=str(metadata_file), error=str(me))
+                    # continue to next pending
+                    continue
 
             if not active_batches:
-                break
+                continue
 
             log("batch.process.monitoring", active_count=len(active_batches))
             print(
@@ -283,16 +339,40 @@ def start_process(args, config):
                         print(
                             f"   [green]Resultados do lote {batch_id} inseridos na base de dados com sucesso.[/green]"
                         )
+                        # cleanup metadata on success
+                        try:
+                            data["metadata_file"].unlink()
+                        except Exception as ce:
+                            log("cleanup.error", file=str(data["metadata_file"]), error=str(ce))
                     else:
                         print(
                             f"   [red]Falha ao obter ou inserir resultados para o lote {batch_id}.[/red]"
                         )
+                        # move metadata to failed folder on insert failure
+                        try:
+                            mf = data["metadata_file"]
+                            target = (Path("out/batch/failed") / f"{mf.stem}__insert_failed.jsonl")
+                            if mf.exists():
+                                target.parent.mkdir(parents=True, exist_ok=True)
+                                mf.replace(target)
+                                log("batch.process.meta_moved_failed", file=str(target))
+                        except Exception as me:
+                            log("batch.process.move_failed_meta_error", file=str(data["metadata_file"]), error=str(me))
                     completed_batches.append(batch_id)
                 elif status in ["failed", "expired", "cancelled"]:
                     log("batch.process.failed", batch_id=batch_id, status=status)
                     print(
                         f"   [bold red]ERRO: O lote {batch_id} falhou com o estado: {status}[/bold red]"
                     )
+                    # move metadata to failed folder when batch fails in API
+                    try:
+                        mf = data["metadata_file"]
+                        target = (Path("out/batch/failed") / f"{mf.stem}__batch_{status}.jsonl")
+                        if mf.exists():
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            mf.replace(target)
+                    except Exception as me:
+                        log("batch.process.move_failed_meta_error", file=str(data["metadata_file"]), error=str(me))
                     completed_batches.append(batch_id)
 
             for batch_id in completed_batches:
