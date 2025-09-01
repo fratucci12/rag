@@ -284,6 +284,19 @@ def start_process(args, config):
                 input_file = next_batch["input_file"]
                 metadata_file = next_batch["metadata_file"]
 
+                # Check remote active batches to avoid enqueued limit
+                try:
+                    remote_active = processor.list_active_batches()
+                    if len(remote_active) >= 1:
+                        print(
+                            f"Ainda ha lote(s) ativos na API ({len(remote_active)}). Aguardando {poll_interval_seconds}s..."
+                        )
+                        # Re-enqueue and break to wait before attempting creation again
+                        pending_batches.insert(0, {"input_file": input_file, "metadata_file": metadata_file})
+                        break
+                except Exception:
+                    pass
+
                 try:
                     # Respeita cooldown entre criações, se configurado
                     since_last = time.time() - last_create_ts

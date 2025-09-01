@@ -119,3 +119,17 @@ class OpenAIBatchProcessor:
 
     # Compatibilidade retroativa
     get_file_content = get_results
+
+    def list_active_batches(self) -> list[dict]:
+        """Lista lotes ainda ativos (enqueued/validating/in_progress/finalizing)."""
+        try:
+            resp = self.client.batches.list(limit=100)
+        except Exception:
+            return []
+        out = []
+        data = getattr(resp, "data", []) or []
+        for b in data:
+            st = getattr(b, "status", None)
+            if st in ("enqueued", "validating", "in_progress", "finalizing"):
+                out.append({"id": getattr(b, "id", None), "status": st})
+        return out
