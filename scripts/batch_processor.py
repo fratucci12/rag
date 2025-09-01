@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from rag_app.utils import log, load_config, to_vec
-from rag_app.core import split_manifest_into_batches
+from rag_app.core import split_manifest_into_batches, initialize_database
 from rag_app.backends import OpenAIBatchProcessor
 from rag_app.db import connect_pg, bulk_insert_chunks
 from collections import defaultdict
@@ -240,6 +240,14 @@ def start_process(args, config):
         log("batch.config.error", missing="models.openai.embedding_model")
         print("[bold red]Config ausente: models.openai.embedding_model[/bold red]")
         return
+
+    # Garante schema no Postgres (tabelas/índices) antes de ler o manifesto
+    try:
+        initialize_database(config)
+    except SystemExit:
+        return
+    except Exception as e:
+        log("batch.db.init.warn", error=str(e))
 
     log(
         "batch.process.start",

@@ -244,6 +244,11 @@ def split_manifest_into_batches(
                     if is_tmp:
                         pdf_path.unlink(missing_ok=True)
             except Exception as e:
+                # Efetua rollback para limpar estado de transação abortada e prosseguir com a próxima linha
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
                 log("core.error", error=str(e), line=line.strip())
     conn.close()
 
@@ -262,30 +267,38 @@ def split_manifest_into_batches(
         enc = None
         log("tiktoken.missing", warning="Libraria tiktoken não disponível, usando contagem de caracteres")
     batches = []
+    batch_tokens = []  # total de tokens por batch
+    batch_tok_lists = []  # tokens por chunk (para estatísticas)
     current_batch_chunks = []
     current_batch_tokens = 0
+    current_batch_tok_list = []
 
     for chunk_data in all_new_chunks:
         text = chunk_data["chunk_obj"]["text"]
         chunk_tokens = len(enc.encode(text or "")) if enc else len(text or "")
         if current_batch_tokens + chunk_tokens > token_limit and current_batch_chunks:
             batches.append(current_batch_chunks)
+            batch_tokens.append(current_batch_tokens)
+            batch_tok_lists.append(current_batch_tok_list)
             current_batch_chunks = []
             current_batch_tokens = 0
+            current_batch_tok_list = []
 
         current_batch_chunks.append(chunk_data)
         current_batch_tokens += chunk_tokens
+        current_batch_tok_list.append(chunk_tokens)
 
     if current_batch_chunks:
         batches.append(current_batch_chunks)
+        batch_tokens.append(current_batch_tokens)
+        batch_tok_lists.append(current_batch_tok_list)
 
     batch_files = []
 
     for i, batch_chunk_list in enumerate(batches):
         batch_num = i + 1
         input_file = output_dir / f"batch_input_{batch_num}.jsonl"
-        metadata_file = output_dir / f"batch_metadata_{batch_num}.json"
-        metadata_map = {}
+        metadata_file = output_dir / f"batch_metadata_{batch_num}.jsonl"
 
         with input_file.open("w", encoding="utf-8") as out_fp:
             for chunk_data in batch_chunk_list:
@@ -298,10 +311,48 @@ def split_manifest_into_batches(
                     "body": {"input": chunk_obj["text"], "model": embedding_model},
                 }
                 out_fp.write(json.dumps(request, ensure_ascii=False) + "\n")
-                metadata_map[cid] = chunk_data
-
+        # Escreve metadados como JSONL (uma linha por chunk), para casar com o leitor em scripts/batch_processor.py
         with metadata_file.open("w", encoding="utf-8") as meta_fp:
-            json.dump(metadata_map, meta_fp)
+            for chunk_data in batch_chunk_list:
+                cid = chunk_data["cid"]
+                chunk_obj = chunk_data["chunk_obj"]
+                meta_line = {
+                    "chunk_id": cid,
+                    "strategy": chunk_data.get("tag"),
+                    "table": chunk_data.get("tbl"),
+                    "doc_id": chunk_data.get("doc_id"),
+                    "page_start": chunk_obj.get("page_start"),
+                    "page_end": chunk_obj.get("page_end"),
+                    "tok_est": chunk_obj.get("tok_est"),
+                    "char_len": chunk_obj.get("char_len"),
+                    "text": chunk_obj.get("text", ""),
+                    "meta": chunk_data.get("doc_meta", {}),
+                }
+                meta_fp.write(json.dumps(meta_line, ensure_ascii=False) + "\n")
+
+        # Estatísticas e contagem de tokens do batch no log
+        try:
+            tok_list = batch_tok_lists[i] if i < len(batch_tok_lists) else []
+            total_tok = batch_tokens[i] if i < len(batch_tokens) else sum(tok_list)
+            cnt = len(tok_list) or len(batch_chunk_list)
+            min_tok = min(tok_list) if tok_list else None
+            max_tok = max(tok_list) if tok_list else None
+            avg_tok = (total_tok / cnt) if cnt else None
+            log(
+                "batch.pack.stats",
+                batch=(i + 1),
+                chunks=len(batch_chunk_list),
+                tokens=total_tok,
+                avg_tokens=avg_tok,
+                min_tokens=min_tok,
+                max_tokens=max_tok,
+                token_limit=token_limit,
+                approx=(enc is None),
+                input=str(input_file),
+                meta=str(metadata_file),
+            )
+        except Exception:
+            pass
 
         batch_files.append({"input_file": input_file, "metadata_file": metadata_file})
 
