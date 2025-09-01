@@ -16,10 +16,11 @@ register_uuid()
 try:
     from psycopg2.extras import execute_values
 except ImportError:
-
     def execute_values(cur, sql_with_values_placeholder, rows, page_size=200):
-        # Fallback
-        pass
+        """Fallback quando psycopg2.extras.execute_values não está disponível."""
+        raise ImportError(
+            "psycopg2.extras.execute_values não disponível; instale psycopg2-binary"
+        )
 
 
 # --- Definições de Schema (DDL) ---

@@ -24,7 +24,10 @@ class QueryPlanner:
             ) from e
 
         self.model = model
-        self.system_prompt = "Você é um especialista em analisar perguntas e extrair parâmetros para busca em um banco de dados de compras públicas."
+        self.system_prompt = (
+            "Você é um especialista em analisar perguntas e extrair parâmetros "
+            "para busca em um banco de dados de compras públicas."
+        )
 
     def analyze_query(self, user_query: str) -> Dict[str, Any]:
         """

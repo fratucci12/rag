@@ -104,9 +104,12 @@ class OpenAIBatchProcessor:
             "error_file_id": batch.error_file_id,
         }
 
-    def get_file_content(self, file_id: str) -> str:
+    def get_results(self, file_id: str) -> str:
         """Obtém o conteúdo de um ficheiro de resultados."""
         if not file_id:
             return ""
         content = self.client.files.content(file_id)
         return content.text
+
+    # Compatibilidade retroativa
+    get_file_content = get_results

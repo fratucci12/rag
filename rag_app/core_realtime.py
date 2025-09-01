@@ -91,8 +91,6 @@ def process_documents_realtime(config: dict):
                                 pdf_path.unlink(missing_ok=True)
                             continue
 
-                        from math import ceil
-
                         EMBED_BATCH = (config.get("indexing", {}) or {}).get("embed_batch", 64)
                         source_filename = pdf_path.name
 

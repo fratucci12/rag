@@ -6,7 +6,6 @@ import json
 import uuid
 import tempfile
 import hashlib
-import tiktoken
 from typing import List, Dict, Any, Optional
 import zipfile
 from pathlib import Path
@@ -242,16 +241,20 @@ def split_manifest_into_batches(
     try:
         import tiktoken
 
-        enc = tiktoken.encoding_for_model(embedding_model)
-    except (KeyError, ValueError, TypeError):  # evita 'except Exception'
-        enc = tiktoken.get_encoding("cl100k_base")
+        try:
+            enc = tiktoken.encoding_for_model(embedding_model)
+        except (KeyError, ValueError, TypeError):
+            enc = tiktoken.get_encoding("cl100k_base")
+    except ImportError:
+        enc = None
+        log("tiktoken.missing", warning="Libraria tiktoken não disponível, usando contagem de caracteres")
     batches = []
     current_batch_chunks = []
     current_batch_tokens = 0
 
     for chunk_data in all_new_chunks:
         text = chunk_data["chunk_obj"]["text"]
-        chunk_tokens = len(enc.encode(text or ""))
+        chunk_tokens = len(enc.encode(text or "")) if enc else len(text or "")
         if current_batch_tokens + chunk_tokens > token_limit and current_batch_chunks:
             batches.append(current_batch_chunks)
             current_batch_chunks = []
