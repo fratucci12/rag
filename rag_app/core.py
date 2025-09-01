@@ -199,6 +199,16 @@ def split_manifest_into_batches(
                                 "max_tokens": cfg.get("max_tokens"),
                                 "overlap_tokens": cfg.get("overlap"),
                             }
+                            # opcional: usar tiktoken para contagem de tokens no chunking
+                            if cfg.get("use_tiktoken"):
+                                params["use_tiktoken"] = True
+                                token_model = (
+                                    (config.get("models", {}).get("openai", {}) or {}).get(
+                                        "embedding_model"
+                                    )
+                                )
+                                if token_model:
+                                    params["model"] = token_model
                         elif kind == "chars":
                             params = {
                                 "window_chars": cfg.get("window"),

@@ -106,7 +106,19 @@ def process_documents_realtime(config: dict):
 
                             params = {}
                             if kind in ["pages", "paras", "sent", "rec"]:
-                                params = {"max_tokens": cfg.get("max_tokens"), "overlap_tokens": cfg.get("overlap")}
+                                params = {
+                                    "max_tokens": cfg.get("max_tokens"),
+                                    "overlap_tokens": cfg.get("overlap"),
+                                }
+                                if cfg.get("use_tiktoken"):
+                                    params["use_tiktoken"] = True
+                                    token_model = (
+                                        (config.get("models", {}).get("openai", {}) or {}).get(
+                                            "embedding_model"
+                                        )
+                                    )
+                                    if token_model:
+                                        params["model"] = token_model
                             elif kind == "chars":
                                 params = {"window_chars": cfg.get("window"), "overlap_chars": cfg.get("overlap_chars")}
                             params = {k: v for k, v in params.items() if v is not None}

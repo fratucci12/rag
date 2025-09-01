@@ -9,7 +9,7 @@ import re
 import datetime as dt
 import unicodedata
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import yaml
 
 # --- Constantes ---
@@ -59,6 +59,57 @@ def sanitize_text(s: str) -> str:
 
 def approx_token_len(s: str) -> int:
     return max(1, math.ceil(len(s) / 4))
+
+
+def _get_token_encoder(
+    model: Optional[str] = None, encoding_name: Optional[str] = None
+):
+    """
+    Tenta obter um encoder do tiktoken para um dado modelo ou encoding base.
+    - Se tiktoken não estiver instalado, retorna None.
+    - Se o modelo não for reconhecido, tenta encoding base (por padrão cl100k_base).
+    """
+    try:
+        import tiktoken  # type: ignore
+
+        enc = None
+        if model:
+            try:
+                enc = tiktoken.encoding_for_model(model)
+            except Exception:
+                enc = None
+        if enc is None:
+            base = encoding_name or "cl100k_base"
+            try:
+                enc = tiktoken.get_encoding(base)
+            except Exception:
+                enc = None
+        return enc
+    except ImportError:
+        return None
+
+
+def count_tokens(
+    text: str,
+    model: Optional[str] = None,
+    *,
+    encoding_name: Optional[str] = None,
+    encoder=None,
+) -> int:
+    """
+    Conta tokens de um texto.
+    - Se um `encoder` (tiktoken) for fornecido, usa-o.
+    - Caso contrário, tenta resolver via `model` ou `encoding_name`.
+    - Se tiktoken não estiver disponível, usa a estimativa approx (len/4).
+    """
+    s = text or ""
+    enc = encoder or _get_token_encoder(model, encoding_name)
+    if enc is not None:
+        try:
+            return len(enc.encode(s))
+        except Exception:
+            pass
+    return approx_token_len(s)
 
 
 # --- Funções de Hash e IDs ---
