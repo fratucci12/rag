@@ -30,7 +30,7 @@ install:
 
 test:
 	@echo "--> A executar testes (pytest)..."
-	@if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+	python -c "import os, sys, subprocess; p='requirements-dev.txt'; sys.exit(0) if not os.path.exists(p) else sys.exit(subprocess.call([sys.executable,'-m','pip','install','-r',p]))"
 	pytest -q
 
 pre-commit-install:
@@ -48,18 +48,18 @@ pre-commit-update:
 
 db-init:
 	@echo "--> A inicializar o schema da base de dados..."
-	PYTHONPATH=. python scripts/index_realtime.py --init-db-only
+	python scripts/index_realtime.py --init-db-only
 
 # --- Comandos de Indexacao ---
 index-realtime:
 	@echo "--> A iniciar indexacao em tempo real..."
-	PYTHONPATH=. python scripts/index_realtime.py
+	python scripts/index_realtime.py
 
 index-batch:
 	@echo "--> A iniciar o processo de indexacao em lote automatico..."
-	PYTHONPATH=. python scripts/batch_processor.py start
+	python scripts/batch_processor.py start
 
 # --- Comandos de Teste ---
 test-interactive:
 	@echo "--> A iniciar teste de recuperacao interativo..."
-	PYTHONPATH=. python scripts/test_retrieval.py --interactive
+	python scripts/test_retrieval.py --interactive
