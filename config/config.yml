@@ -1,0 +1,61 @@
+# Arquivo de Configuração Central para o Projeto RAG
+
+# --- Configurações do Banco de Dados ---
+database:
+  # A DSN (Data Source Name) será lida da variável de ambiente PG_DSN
+  docs_table: "documents"
+  chunks_prefix: "chunks" # Ex: chunks_pages_800x120
+  index_type: "ivfflat" # ou "hnsw"
+
+# --- Configurações de Indexação (main.py) ---
+indexing:
+  manifest_path: "data/manifest.ndjson"
+  # Limita o número de entradas do manifesto a serem processadas (0 = todas)
+  limit_entries: 0
+  # Se true, apaga os dados das tabelas de estratégia antes de inserir novos
+  reset_strategies: false
+
+# --- Configurações dos Modelos de Embedding ---
+models:
+  # Backend a ser usado: "local" ou "openai"
+  default_backend: "openai"
+  local:
+    # Modelo da biblioteca sentence-transformers
+    embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+    # Dimensão do vetor do modelo acima
+    embedding_dim: 384
+  openai:
+    embedding_model: "text-embedding-3-small"
+    embedding_dim: 1536
+
+# --- Estratégias de Chunking ---
+# Defina aqui as estratégias que serão aplicadas durante a indexação.
+# O nome (ex: 'pages_800x120') será usado para criar a tabela no banco.
+strategies:
+  pages_2000x400:
+    kind: "pages"
+    max_tokens: 1500
+    overlap: 300
+  paras_2000x400:
+    kind: "paras"
+    max_tokens: 1500
+    overlap: 300
+  rec_2000x400:
+    kind: "rec"
+    max_tokens: 2000
+    overlap: 400
+
+# --- Configurações do Testador de Recuperação (retrieval_tester.py) ---
+retrieval_testing:
+  # Arquivo com as perguntas para o modo batch
+  query_file: "tests/queries.json"
+  # Arquivo de saída para os resultados do modo batch
+  output_file: "tests/test_results.jsonl"
+  # Quantos resultados de topo retornar por busca
+  top_k: 5
+  # Ativa a avaliação com um LLM como juiz
+  evaluate_with_llm: true
+  # Modelo LLM a ser usado como juiz (requer chave da OpenAI)
+  judge_model: "gpt-4o-mini"
+
+  reranker_model: "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"

@@ -1,0 +1,17 @@
+[
+  { "query_id": "MQ01", "text": "Qual o volume total de \"cadeiras giratórias\" licitadas no último trimestre?" },
+  { "query_id": "MQ02", "text": "Quais órgãos públicos ou tipos de entidade (ex: tribunais, ministérios, conselhos) demonstraram a maior demanda por mobiliário de escritório nos últimos seis meses?" },
+  { "query_id": "MQ03", "text": "Quais estados ou regiões apresentaram o maior número de licitações para renovação de mobiliário?" },
+  { "query_id": "MQ04", "text": "Identifique as cinco licitações de maior volume (em quantidade de itens) para \"estações de trabalho\"." },
+  { "query_id": "MQ05", "text": "Qual a quantidade estimada de \"poltronas\" ou \"sofás\" para áreas de recepção licitadas este ano?" },
+  { "query_id": "MQ06", "text": "Qual a faixa de preço (mínimo, máximo, média) para \"cadeiras giratórias ergonômicas com certificação ABNT\" em licitações federais?" },
+  { "query_id": "MQ07", "text": "Compare o custo médio de uma \"mesa de reunião para 10 lugares\" em diferentes estados." },
+  { "query_id": "MQ08", "text": "Qual o valor médio por assento para \"longarinas de 3 lugares\" destinadas a áreas de espera?" },
+  { "query_id": "MQ09", "text": "Quais são os fornecedores mais recorrentes em licitações de mobiliário para órgãos do poder judiciário?" },
+  { "query_id": "MQ10", "text": "Mapeie os principais concorrentes no mercado de fornecimento de mobiliário ergonômico para escritórios públicos." },
+  { "query_id": "MQ11", "text": "Algum fornecedor específico se destaca por vencer licitações de grande porte para mobiliário planejado?" },
+  { "query_id": "MQ12", "text": "Quais empresas costumam participar de licitações para mobiliário de conselhos regionais (como CREA, COREN, etc.)?" },
+  { "query_id": "MQ13", "text": "Quais são as certificações (ex: ABNT NBR 13962, NR-17) mais comumente exigidas para cadeiras de escritório em editais recentes?" },
+  { "query_id": "MQ14", "text": "Quais são os requisitos de ergonomia mais detalhados e frequentemente citados nos termos de referência para cadeiras giratórias?" },
+  { "query_id": "MQ15", "text": "Quais os mecanismos de ajuste (altura do assento, inclinação do encosto, apoio de braços) que são considerados padrão de mercado?" }
+]

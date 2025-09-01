@@ -1,0 +1,13 @@
+# Ficheiros de ambiente
+.env
+
+# Diretórios de output e temporários
+/out/
+/tests/test_results.jsonl
+__pycache__/
+*.pyc
+
+# Ficheiros de ambiente virtual do Python
+.venv/
+venv/
+env/
