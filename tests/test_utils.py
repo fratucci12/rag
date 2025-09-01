@@ -58,4 +58,3 @@ def test_load_config_roundtrip(tmp_path: Path):
     cfg = utils.load_config(str(yml))
     assert cfg["key"] == "value"
     assert cfg["num"] == 3
-

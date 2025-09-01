@@ -132,4 +132,3 @@ def test_bulk_insert_chunks_uses_execute_values(monkeypatch):
     rows = [("cid", "strat", "doc", 1, 1, 10, 50, "text", "{}", "[0.1,0.2]")]
     db.bulk_insert_chunks(cur, "chunks_t", rows, init_batch=2, inner_page=2)
     assert captured["calls"] >= 1
-

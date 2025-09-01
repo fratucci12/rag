@@ -49,6 +49,12 @@ class OpenAIBackend(Backend):
         self.batch_size = batch_size
 
     def embed(self, texts: List[str]) -> List[List[float]]:
+        try:
+            resp = self.client.embeddings.create(model=self.model, input=texts)
+            return [d.embedding for d in resp.data]
+        except Exception as e:
+            log("openai.embed.batch_fallback", reason=str(e))
+
         all_embeddings = []
         # Processa em lotes para não exceder limites de API
         for i in range(0, len(texts), self.batch_size):

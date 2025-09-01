@@ -1,0 +1,95 @@
+                                "window_chars": cfg.get("window"),
+                                "overlap_chars": cfg.get("overlap_chars"),
+                            }
+
+                        params = {k: v for k, v in params.items() if v is not None}
+                        if not params:
+                            continue
+
+                        chunks = chunk_func(pages, **params)
+                        # [CORREÇÃO] Passa o nome do ficheiro para garantir a unicidade do ID
+                        new_chunks_with_cid = filter_new_chunks(
+                            cur, tbl, doc_id, tag, chunks, source_filename
+                        )
+
+                        for cid, chunk_obj in new_chunks_with_cid:
+                            # [CORREÇÃO] Dupla verificação para garantir que o ID não foi adicionado nesta execução
+                            if cid in processed_cids_in_this_batch:
+                                continue
+
+                            all_new_chunks.append(
+                                {
+                                    "cid": cid,
+                                    "doc_id": doc_id,
+                                    "tag": tag,
+                                    "tbl": tbl,
+                                    "doc_meta": doc_meta_aplainado,
+                                    "chunk_obj": chunk_obj,
+                                }
+                            )
+                            processed_cids_in_this_batch.add(cid)
+                    if is_tmp:
+                        pdf_path.unlink(missing_ok=True)
+            except Exception as e:
+                log("core.error", error=str(e), line=line.strip())
+    conn.close()
+
+    if not all_new_chunks:
+        return []
+
+    embedding_model = config["models"]["openai"]["embedding_model"]
+    try:
+        import tiktoken
+
+        try:
+            enc = tiktoken.encoding_for_model(embedding_model)
+        except (KeyError, ValueError, TypeError):
+            enc = tiktoken.get_encoding("cl100k_base")
+    except ImportError:
+        enc = None
+        log("tiktoken.missing", warning="Libraria tiktoken não disponível, usando contagem de caracteres")
+    batches = []
+    current_batch_chunks = []
+    current_batch_tokens = 0
+
+    for chunk_data in all_new_chunks:
+        text = chunk_data["chunk_obj"]["text"]
+        chunk_tokens = len(enc.encode(text or "")) if enc else len(text or "")
+        if current_batch_tokens + chunk_tokens > token_limit and current_batch_chunks:
+            batches.append(current_batch_chunks)
+            current_batch_chunks = []
+            current_batch_tokens = 0
+
+        current_batch_chunks.append(chunk_data)
+        current_batch_tokens += chunk_tokens
+
+    if current_batch_chunks:
+        batches.append(current_batch_chunks)
+
+    batch_files = []
+
+    for i, batch_chunk_list in enumerate(batches):
+        batch_num = i + 1
+        input_file = output_dir / f"batch_input_{batch_num}.jsonl"
+        metadata_file = output_dir / f"batch_metadata_{batch_num}.json"
+        metadata_map = {}
+
+        with input_file.open("w", encoding="utf-8") as out_fp:
+            for chunk_data in batch_chunk_list:
+                cid = chunk_data["cid"]
+                chunk_obj = chunk_data["chunk_obj"]
+                request = {
+                    "custom_id": cid,
+                    "method": "POST",
+                    "url": "/v1/embeddings",
+                    "body": {"input": chunk_obj["text"], "model": embedding_model},
+                }
+                out_fp.write(json.dumps(request, ensure_ascii=False) + "\n")
+                metadata_map[cid] = chunk_data
+
+        with metadata_file.open("w", encoding="utf-8") as meta_fp:
+            json.dump(metadata_map, meta_fp)
+
+        batch_files.append({"input_file": input_file, "metadata_file": metadata_file})
+
+    return batch_files

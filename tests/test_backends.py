@@ -94,4 +94,3 @@ def test_openai_batch_processor_basic(monkeypatch, tmp_path):
     # get_results
     content = proc.get_results(st["output_file_id"])
     assert "c1" in content and "c2" in content
-

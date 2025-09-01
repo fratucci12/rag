@@ -32,7 +32,7 @@ class LLMEvaluator:
         self.system_prompt = """
         Você é um assistente especialista em avaliar a relevância de documentos.
         A sua tarefa é avaliar, numa escala de 1 a 5, quão útil o [CONTEXTO] fornecido é para responder à [PERGUNTA].
-        
+
         A escala de notas é:
         1: Totalmente irrelevante.
         2: Pouco relevante.

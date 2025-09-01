@@ -148,4 +148,3 @@ def test_rerank_with_cross_encoder_sorts_by_ce_scores():
     assert len(out) == 2
     # since CrossEncoder.predict returns increasing scores, top is last of initial list
     assert out[0]["text"] in ("T1", "T2", "T3")
-

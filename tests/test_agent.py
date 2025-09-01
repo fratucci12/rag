@@ -43,4 +43,3 @@ def test_query_planner_parses_tool_call_arguments():
     assert out["semantic_query"] == "preço de cadeiras"
     assert out["filters"]["ano"] == 2024
     assert out["filters"]["estado_sigla"] == "SP"
-

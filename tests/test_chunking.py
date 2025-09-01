@@ -6,7 +6,7 @@ def sample_pages():
         "Primeira página. Texto curto.",
         "Segunda página com mais texto.\n\nParágrafo seguinte com conteúdo.",
         "",  # página vazia deve ser ignorada onde fizer sentido
-        "Terceira página. Última." 
+        "Terceira página. Última."
     ]
 
 
@@ -56,4 +56,3 @@ def test_chunk_recursive_respects_max_tokens():
     # estimativa de tokens de cada chunk deve ser <= max_tokens + alguma margem de overlap
     for ch in chunks:
         assert ch["tok_est"] <= 6 or ch["text"]
-

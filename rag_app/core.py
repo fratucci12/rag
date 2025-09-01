@@ -108,7 +108,10 @@ def _aplainar_e_mapear_meta(meta_original: Dict) -> Dict:
         "poder_compra": compra_info.get("poder"),
         "data_publicacao": compra_info.get("data_publicacao"),
     }
-    return {k: v for k, v in meta_aplainado.items() if v is not None}
+    filtrado = {k: v for k, v in meta_aplainado.items() if v is not None}
+    if "orgao_nome" not in filtrado:
+        filtrado["orgao_nome"] = meta_aplainado.get("orgao_nome")
+    return filtrado
 
 
 # --- Lógica Principal de Indexação ---

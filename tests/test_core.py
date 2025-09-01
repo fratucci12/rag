@@ -97,4 +97,3 @@ def test_chunk_functions_mapping():
     assert core.CHUNK_FUNCTIONS["sent"] is chunking.chunk_sentences
     assert core.CHUNK_FUNCTIONS["chars"] is chunking.chunk_chars
     assert core.CHUNK_FUNCTIONS["rec"] is chunking.chunk_recursive
-

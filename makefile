@@ -1,6 +1,6 @@
 # Makefile para orquestrar o projeto de RAG
 
-.PHONY: help install db-init index-realtime index-batch test-interactive
+.PHONY: help install db-init index-realtime index-batch test-interactive test pre-commit-install pre-commit pre-commit-update
 
 help:
 	@echo "---------------------------------------------------------------------"
@@ -10,6 +10,10 @@ help:
 	@echo "Uso Geral:"
 	@echo "  make install         -> Instala as dependencias do requirements.txt"
 	@echo "  make db-init         -> Cria as tabelas e extensoes na base de dados"
+	@echo "  make test            -> Executa a suite de testes (pytest)"
+	@echo "  make pre-commit-install -> Instala e configura os hooks do pre-commit"
+	@echo "  make pre-commit      -> Executa os hooks do pre-commit em todos os ficheiros"
+	@echo "  make pre-commit-update -> Atualiza as versoes dos hooks do pre-commit"
 	@echo ""
 	@echo "Metodos de Indexacao:"
 	@echo "  make index-realtime  -> (MAIS RAPIDO para poucos ficheiros) Processa e envia os embeddings um a um."
@@ -23,6 +27,24 @@ help:
 install:
 	@echo "--> A instalar dependencias..."
 	pip install -r requirements.txt
+
+test:
+	@echo "--> A executar testes (pytest)..."
+	@if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+	pytest -q
+
+pre-commit-install:
+	@echo "--> A instalar e configurando pre-commit..."
+	pip install pre-commit
+	pre-commit install
+
+pre-commit:
+	@echo "--> A executar pre-commit em todos os ficheiros..."
+	pre-commit run --all-files
+
+pre-commit-update:
+	@echo "--> A atualizar os hooks do pre-commit..."
+	pre-commit autoupdate
 
 db-init:
 	@echo "--> A inicializar o schema da base de dados..."

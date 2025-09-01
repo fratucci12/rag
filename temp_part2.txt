@@ -1,0 +1,148 @@
+                ]
+                avg_score_top_k = (
+                    sum(valid_scores) / len(valid_scores) if valid_scores else 0.0
+                )
+                mrr = 0.0
+                for i, res in enumerate(results):
+                    if res.get("llm_judge_score", 0) >= 4:
+                        mrr = 1.0 / (i + 1)
+                        break
+
+                table.add_row(
+                    query_id,
+                    result_item["query_text"][:30] + "...",
+                    strategy_name,
+                    method_name,
+                    top_1_hit,
+                    f"{top_1_score}",
+                    f"{avg_score_top_k:.2f}",
+                    f"{mrr:.2f}",
+                )
+        last_query_id = query_id
+
+    console.print(table)
+
+
+def run_tests(
+    config: Dict[str, Any],
+    queries_to_process: List[Dict],
+    interactive_mode: bool,
+    output_path_str: Optional[str] = None,
+):
+    dsn = os.getenv("PG_DSN")
+    if not dsn:
+        log(fatal="A variável de ambiente PG_DSN não está definida.")
+        sys.exit(1)
+
+    console = Console()
+    model_cfg = config["models"]
+    test_cfg = config["retrieval_testing"]
+    backend_name = model_cfg["default_backend"]
+    backend = (
+        LocalBackend(model_cfg["local"]["embedding_model"])
+        if backend_name == "local"
+        else OpenAIBackend(model_cfg["openai"]["embedding_model"])
+    )
+    conn = connect_pg(dsn)
+
+    evaluator = LLMEvaluator(model=test_cfg["judge_model"])
+    planner = QueryPlanner(
+        model=config.get("agent", {}).get("planner_model", "gpt-4-turbo")
+    )
+
+    reranker_model = test_cfg.get(
+        "reranker_model", "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    )
+    log("reranker.init", model=reranker_model)
+
+    strategy_tables = [
+        f"{config['database']['chunks_prefix']}_{tag}" for tag in config["strategies"]
+    ]
+
+    all_results_for_all_queries = []
+
+    output_fp = (
+        open(output_path_str, "w", encoding="utf-8") if output_path_str else None
+    )
+
+    try:
+        pbar = tqdm(queries_to_process, desc="A processar perguntas")
+        for query_item in pbar:
+            user_query = query_item["text"]
+            query_id = query_item.get("query_id", "N/A")
+            pbar.set_description(f"Query: {query_id}")
+
+            plan = (
+                planner.analyze_query(user_query)
+                if not interactive_mode
+                else query_item
+            )
+            semantic_query = plan["semantic_query"]
+            filters = plan["filters"]
+
+            query_embedding = backend.embed([semantic_query])[0]
+            results_for_all_strategies = {}
+
+            for table_name in strategy_tables:
+                with conn.cursor() as cur:
+                    methods = {
+                        "Similarity": basic_similarity_search(
+                            cur, query_embedding, table_name, test_cfg["top_k"], filters
+                        ),
+                        "Hybrid": hybrid_search_rrf(
+                            cur,
+                            semantic_query,
+                            query_embedding,
+                            table_name,
+                            test_cfg["top_k"],
+                            filters,
+                        ),
+                        "Re-Ranking": rerank_with_cross_encoder(
+                            cur,
+                            semantic_query,
+                            query_embedding,
+                            table_name,
+                            reranker_model,
+                            test_cfg["top_k"],
+                            filters,
+                        ),
+                    }
+
+                    for method_name, results_list in methods.items():
+                        for res in results_list:
+                            score = evaluator.evaluate_chunk(
+                                semantic_query, res["text"]
+                            )
+                            res["llm_judge_score"] = score
+
+                    results_for_all_strategies[table_name] = methods
+
+            final_result_item = {
+                "query_id": query_id,
+                "query_text": user_query,
+                "semantic_query": semantic_query,
+                "filters": filters,
+                "results_by_strategy_table": results_for_all_strategies,
+            }
+            all_results_for_all_queries.append(final_result_item)
+
+            if output_fp:
+                output_fp.write(
+                    json.dumps(final_result_item, ensure_ascii=False) + "\n"
+                )
+
+        if interactive_mode and all_results_for_all_queries:
+            # No modo interativo, mostramos a tabela de apenas uma pergunta
+            display_batch_results_table(console, all_results_for_all_queries)
+        elif not interactive_mode:
+            # No modo batch, mostramos a tabela consolidada no final
+            display_batch_results_table(console, all_results_for_all_queries)
+
+    finally:
+        conn.close()
+        if output_fp:
+            output_fp.close()
+            log(
+                "run.finish",
+                message=f"Resultados detalhados do teste salvos em: {output_path_str}",
+            )
