@@ -33,6 +33,12 @@ batch_processing:
   # Limite total de tokens por ficheiro de lote (JSONL)
   # Ajuste conforme a sua necessidade/cota. Padrão seguro: 2 milhões.
   token_limit_per_batch: 2000000
+  # Intervalo entre checagens de status dos lotes ativos (segundos)
+  poll_interval_seconds: 60
+  # Espera entre a conclusão/criação de lotes para evitar enqueued limit (segundos)
+  create_cooldown_seconds: 180
+  # Backoff quando a API retorna erro de limite de lotes enfileirados (segundos)
+  enqueued_retry_backoff_seconds: 180
 
 # --- Estratégias de Chunking ---
 # Defina aqui as estratégias que serão aplicadas durante a indexação.

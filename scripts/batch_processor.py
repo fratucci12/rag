@@ -76,9 +76,8 @@ def retrieve_and_insert(
         # 2) Carrega resultados (embeddings) e metadados
         results_content = processor.get_results(result_file_id)
         results = [json.loads(line) for line in results_content.strip().split("\n") if line.strip()]
-        metadata = [
-            json.loads(line) for line in metadata_file.read_text().strip().split("\n") if line.strip()
-        ]
+        meta_text = metadata_file.read_text(encoding="utf-8", errors="replace")
+        metadata = [json.loads(line) for line in meta_text.strip().split("\n") if line.strip()]
 
         if len(results) != len(metadata):
             log(
@@ -253,8 +252,11 @@ def start_process(args, config):
         "batch.process.start",
         message="A dividir o manifesto em lotes baseados no limite de tokens...",
     )
-    token_limit = config.get("batch_processing", {}).get(
-        "token_limit_per_batch", 2000000)
+    bp_cfg = config.get("batch_processing", {}) or {}
+    token_limit = bp_cfg.get("token_limit_per_batch", 2000000)
+    poll_interval_seconds = bp_cfg.get("poll_interval_seconds", 60)
+    create_cooldown_seconds = bp_cfg.get("create_cooldown_seconds", 30)
+    enqueued_retry_backoff_seconds = bp_cfg.get("enqueued_retry_backoff_seconds", 90)
 
     batch_files = split_manifest_into_batches(config, output_dir, token_limit)
 
@@ -272,6 +274,7 @@ def start_process(args, config):
 
     # [CORREÇÃO] Define um limite de concorrência para evitar sobrecarregar a API
     MAX_CONCURRENT_BATCHES = 1
+    last_create_ts = 0.0
 
     try:
         while pending_batches or active_batches:
@@ -282,6 +285,13 @@ def start_process(args, config):
                 metadata_file = next_batch["metadata_file"]
 
                 try:
+                    # Respeita cooldown entre criações, se configurado
+                    since_last = time.time() - last_create_ts
+                    if since_last < create_cooldown_seconds:
+                        wait = int(create_cooldown_seconds - since_last)
+                        if wait > 0:
+                            print(f"Aguardando {wait}s antes de criar próximo lote...")
+                            time.sleep(wait)
                     log("batch.process.uploading", file=str(input_file))
                     print(f"\nA enviar o ficheiro do lote: {input_file.name}...")
                     file_id = processor.upload_file(input_file)
@@ -293,8 +303,10 @@ def start_process(args, config):
                     )
                     active_batches[batch_id] = {
                         "metadata_file": metadata_file,
+                        "input_file": input_file,
                         "status": "in_progress",
                     }
+                    last_create_ts = time.time()
                 except Exception as e:
                     # controla tentativas de enfileirar
                     key = str(metadata_file)
@@ -304,6 +316,13 @@ def start_process(args, config):
                     print(
                         f"[yellow]Falha ao enfileirar lote: {e}. Tentativa {attempts}/3[/yellow]"
                     )
+                    # Se atingir limite de 'enqueued', aplica backoff explícito
+                    emsg = str(e).lower()
+                    if "enqueued" in emsg and "limit" in emsg:
+                        print(
+                            f"[yellow]Limite de lotes enfileirados atingido. Aguardando {enqueued_retry_backoff_seconds}s antes de re-tentar...[/yellow]"
+                        )
+                        time.sleep(enqueued_retry_backoff_seconds)
                     if attempts < 3:
                         pending_batches.append(next_batch)
                     else:
@@ -322,9 +341,9 @@ def start_process(args, config):
 
             log("batch.process.monitoring", active_count=len(active_batches))
             print(
-                f"\n({time.strftime('%H:%M:%S')}) A monitorizar {len(active_batches)} lote(s) ativo(s)... A aguardar 60 segundos."
+                f"\n({time.strftime('%H:%M:%S')}) A monitorizar {len(active_batches)} lote(s) ativo(s)... A aguardar {poll_interval_seconds} segundos."
             )
-            time.sleep(60)
+            time.sleep(poll_interval_seconds)
 
             completed_batches = []
             for batch_id, data in active_batches.items():
@@ -352,35 +371,66 @@ def start_process(args, config):
                             data["metadata_file"].unlink()
                         except Exception as ce:
                             log("cleanup.error", file=str(data["metadata_file"]), error=str(ce))
+                        # Cooldown para garantir que a API reconheça liberação antes da próxima criação
+                        if create_cooldown_seconds > 0:
+                            print(
+                                f"Aguardando {create_cooldown_seconds}s antes de criar o próximo lote..."
+                            )
+                            time.sleep(create_cooldown_seconds)
                     else:
                         print(
                             f"   [red]Falha ao obter ou inserir resultados para o lote {batch_id}.[/red]"
                         )
-                        # move metadata to failed folder on insert failure
+                        # move metadata and input to failed folder on insert failure
                         try:
-                            mf = data["metadata_file"]
-                            target = (Path("out/batch/failed") / f"{mf.stem}__insert_failed.jsonl")
-                            if mf.exists():
-                                target.parent.mkdir(parents=True, exist_ok=True)
-                                mf.replace(target)
-                                log("batch.process.meta_moved_failed", file=str(target))
+                            mf = data.get("metadata_file")
+                            if mf:
+                                target = Path("out/batch/failed") / f"{mf.stem}__insert_failed.jsonl"
+                                if mf.exists():
+                                    target.parent.mkdir(parents=True, exist_ok=True)
+                                    mf.replace(target)
+                                    log("batch.process.meta_moved_failed", file=str(target))
                         except Exception as me:
-                            log("batch.process.move_failed_meta_error", file=str(data["metadata_file"]), error=str(me))
+                            log("batch.process.move_failed_meta_error", file=str(data.get("metadata_file")), error=str(me))
+                        try:
+                            inf = data.get("input_file")
+                            if inf:
+                                infp = Path(inf)
+                                target_in = Path("out/batch/failed") / f"{infp.stem}__insert_failed.jsonl"
+                                if infp.exists():
+                                    target_in.parent.mkdir(parents=True, exist_ok=True)
+                                    infp.replace(target_in)
+                                    log("batch.process.input_moved_failed", file=str(target_in))
+                        except Exception as ie:
+                            log("batch.process.move_failed_input_error", file=str(data.get("input_file")), error=str(ie))
                     completed_batches.append(batch_id)
                 elif status in ["failed", "expired", "cancelled"]:
                     log("batch.process.failed", batch_id=batch_id, status=status)
                     print(
                         f"   [bold red]ERRO: O lote {batch_id} falhou com o estado: {status}[/bold red]"
                     )
-                    # move metadata to failed folder when batch fails in API
+                    # move metadata and input to failed folder when batch fails in API
                     try:
-                        mf = data["metadata_file"]
-                        target = (Path("out/batch/failed") / f"{mf.stem}__batch_{status}.jsonl")
-                        if mf.exists():
-                            target.parent.mkdir(parents=True, exist_ok=True)
-                            mf.replace(target)
+                        mf = data.get("metadata_file")
+                        if mf:
+                            target = Path("out/batch/failed") / f"{mf.stem}__batch_{status}.jsonl"
+                            if mf.exists():
+                                target.parent.mkdir(parents=True, exist_ok=True)
+                                mf.replace(target)
+                                log("batch.process.meta_moved_failed", file=str(target))
                     except Exception as me:
-                        log("batch.process.move_failed_meta_error", file=str(data["metadata_file"]), error=str(me))
+                        log("batch.process.move_failed_meta_error", file=str(data.get("metadata_file")), error=str(me))
+                    try:
+                        inf = data.get("input_file")
+                        if inf:
+                            infp = Path(inf)
+                            target_in = Path("out/batch/failed") / f"{infp.stem}__batch_{status}.jsonl"
+                            if infp.exists():
+                                target_in.parent.mkdir(parents=True, exist_ok=True)
+                                infp.replace(target_in)
+                                log("batch.process.input_moved_failed", file=str(target_in))
+                    except Exception as ie:
+                        log("batch.process.move_failed_input_error", file=str(data.get("input_file")), error=str(ie))
                     completed_batches.append(batch_id)
 
             for batch_id in completed_batches:
