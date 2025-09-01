@@ -38,7 +38,7 @@ def _require_env(name: str) -> str:
             f"Variável de ambiente {name} não definida. Verifique seu .env."
         )
     return v
-
+#tteste
 
 def retrieve_and_insert(
     batch_id: str,
