@@ -1,6 +1,8 @@
 {
   "chatgpt.config": {
+
     "approval_policy": "never",
     "sandbox_mode": "workspace-write"
-  }
+},
+"chatgpt.openOnStartup": true
 }
