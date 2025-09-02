@@ -521,7 +521,17 @@ def run_tests(
                                     cur, _emb, table_name, top_k_cfg, filters
                                 )
                         except Exception as e:
-                            log("retrieval.method.error", method=name, error=str(e))
+                            # Log e recupera a conex3o de um poss77vel estado abortado
+                            log(
+                                "retrieval.method.error",
+                                method=name,
+                                table=table_name,
+                                error=str(e),
+                            )
+                            try:
+                                cur.connection.rollback()
+                            except Exception:
+                                pass
 
                     for method_name, results_list in methods.items():
                         for res in results_list:
