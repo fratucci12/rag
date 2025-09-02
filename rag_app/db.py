@@ -47,6 +47,8 @@ IDX_CHUNKS_META = (
     "CREATE INDEX IF NOT EXISTS {table}_meta_gin ON {table} USING GIN (meta);"
 )
 IDX_HNSW = "CREATE INDEX IF NOT EXISTS {table}_hnsw ON {table} USING hnsw (embedding vector_cosine_ops) WITH (m=16, ef_construction=64);"
+IDX_IVFFLAT = "CREATE INDEX IF NOT EXISTS {table}_ivfflat ON {table} USING ivfflat (embedding vector_cosine_ops) WITH (lists=100);"
+IDX_TS_GIN = "CREATE INDEX IF NOT EXISTS {table}_ts_gin ON {table} USING GIN (ts);"
 
 
 # --- Funções de Conexão e Schema ---
@@ -72,12 +74,119 @@ def ensure_schema(conn, docs_table: str, chunk_table: str, dim: int, use_hnsw: b
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
         except Exception:
             log("db.vector_ext.warn", reason="Falha ao criar extensão.")
+        # habilita unaccent para FTS melhor com PT-BR
+        try:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS unaccent;")
+        except Exception:
+            log("db.unaccent_ext.warn", reason="Falha ao criar extensão.")
         cur.execute(DDL_DOCS.format(docs=docs_table))
         cur.execute(DDL_DOCS_INDEXES.format(docs=docs_table))
         cur.execute(DDL_CHUNKS.format(table=chunk_table, docs=docs_table, dim=dim))
         cur.execute(IDX_CHUNKS_META.format(table=chunk_table))
-        if use_hnsw:
-            cur.execute(IDX_HNSW.format(table=chunk_table))
+        # coluna/índices FTS
+        # evita tentar coluna gerada se 'ts' já existir (para não esbarrar na checagem de imutabilidade)
+        try:
+            schema = 'public'
+            tbl_name = chunk_table
+            if '.' in chunk_table:
+                schema, tbl_name = chunk_table.split('.', 1)
+            cur.execute(
+                "SELECT 1 FROM information_schema.columns WHERE table_schema=%s AND table_name=%s AND column_name='ts'",
+                (schema, tbl_name),
+            )
+            has_ts = bool(cur.fetchall())
+        except Exception:
+            has_ts = False
+
+        if not has_ts:
+            try:
+                cur.execute("SAVEPOINT sp_fts")
+                cur.execute(
+                    f"ALTER TABLE {chunk_table} "
+                    "ADD COLUMN ts tsvector GENERATED ALWAYS AS ("
+                    "to_tsvector('portuguese', unaccent('unaccent'::regdictionary, text))"
+                    ") STORED;"
+                )
+                cur.execute(IDX_TS_GIN.format(table=chunk_table))
+                cur.execute("RELEASE SAVEPOINT sp_fts")
+                log("db.fts.generated.ok", table=chunk_table)
+            except Exception as e:
+                try:
+                    cur.execute("ROLLBACK TO SAVEPOINT sp_fts")
+                    cur.execute("RELEASE SAVEPOINT sp_fts")
+                except Exception:
+                    pass
+                log("db.fts.warn", table=chunk_table, error=str(e))
+                # Fallback A: índice funcional direto no to_tsvector(text) sem unaccent
+                try:
+                    cur.execute("SAVEPOINT sp_fts_fb")
+                    cur.execute(
+                        f"CREATE INDEX IF NOT EXISTS {chunk_table}_ts_fb_gin "
+                        f"ON {chunk_table} USING GIN (to_tsvector('portuguese', text));"
+                    )
+                    cur.execute("RELEASE SAVEPOINT sp_fts_fb")
+                    log("db.fts.fb_ok", table=chunk_table)
+                except Exception as e2:
+                    try:
+                        cur.execute("ROLLBACK TO SAVEPOINT sp_fts_fb")
+                        cur.execute("RELEASE SAVEPOINT sp_fts_fb")
+                    except Exception:
+                        pass
+                    log("db.fts.fallback.warn", table=chunk_table, error=str(e2))
+
+                # Fallback B: coluna ts normal + trigger
+                try:
+                    cur.execute("SAVEPOINT sp_fts_trg")
+                    cur.execute(f"ALTER TABLE {chunk_table} ADD COLUMN IF NOT EXISTS ts tsvector;")
+                    # tenta função com unaccent; se falhar, cria sem unaccent
+                    try:
+                        cur.execute(
+                            f"CREATE OR REPLACE FUNCTION {chunk_table}_update_ts() RETURNS trigger AS $$\n"
+                            "BEGIN\n"
+                            f"  NEW.ts := to_tsvector('portuguese', unaccent(NEW.text));\n"
+                            "  RETURN NEW;\n"
+                            "END;\n"
+                            "$$ LANGUAGE plpgsql;"
+                        )
+                    except Exception:
+                        cur.execute(
+                            f"CREATE OR REPLACE FUNCTION {chunk_table}_update_ts() RETURNS trigger AS $$\n"
+                            "BEGIN\n"
+                            f"  NEW.ts := to_tsvector('portuguese', NEW.text);\n"
+                            "  RETURN NEW;\n"
+                            "END;\n"
+                            "$$ LANGUAGE plpgsql;"
+                        )
+                    cur.execute(f"DROP TRIGGER IF EXISTS {chunk_table}_ts_tsv ON {chunk_table};")
+                    cur.execute(
+                        f"CREATE TRIGGER {chunk_table}_ts_tsv BEFORE INSERT OR UPDATE ON {chunk_table} "
+                        f"FOR EACH ROW EXECUTE FUNCTION {chunk_table}_update_ts();"
+                    )
+                    cur.execute(IDX_TS_GIN.format(table=chunk_table))
+                    cur.execute("RELEASE SAVEPOINT sp_fts_trg")
+                    log("db.fts.trigger.ok", table=chunk_table)
+                except Exception as e3:
+                    try:
+                        cur.execute("ROLLBACK TO SAVEPOINT sp_fts_trg")
+                        cur.execute("RELEASE SAVEPOINT sp_fts_trg")
+                    except Exception:
+                        pass
+                    log("db.fts.trigger.warn", table=chunk_table, error=str(e3))
+        # índice vetorial conforme estratégia (também sob SAVEPOINT)
+        try:
+            cur.execute("SAVEPOINT sp_vec")
+            if use_hnsw:
+                cur.execute(IDX_HNSW.format(table=chunk_table))
+            else:
+                cur.execute(IDX_IVFFLAT.format(table=chunk_table))
+            cur.execute("RELEASE SAVEPOINT sp_vec")
+        except Exception as e:
+            try:
+                cur.execute("ROLLBACK TO SAVEPOINT sp_vec")
+                cur.execute("RELEASE SAVEPOINT sp_vec")
+            except Exception:
+                pass
+            log("db.vector_index.warn", table=chunk_table, error=str(e))
     conn.commit()
 
 

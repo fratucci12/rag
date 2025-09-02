@@ -37,7 +37,7 @@ Configuração (config/config.yml)
     - `query_file`, `output_file`
     - `top_k` (default), `candidates` (para re‑ranking), `rrf_k` (para híbrida)
     - `judge_model`, `evaluate_with_llm`, `judge_threshold` (para marcar “Hit” e MRR na tabela)
-    - `methods`: lista e ordem dos métodos executados (ex.: ["Similarity", "Hybrid", "Re-Ranking", "Hybrid+Re-Ranking"]) 
+    - `methods`: lista e ordem dos métodos executados (ex.: ["Similarity", "Hybrid", "Re-Ranking", "Hybrid+Re-Ranking"])
     - `hyde`: toggle e modelo padrão do HyDE global (aplicado a todas as estratégias)
     - `per_strategy`: overrides por nome da estratégia (ex.: `pages_1500x400`) para `top_k`, `candidates`, `rrf_k`, `methods` e `hyde.enabled/model`
 
@@ -102,7 +102,8 @@ Estrutura do Projeto (principais arquivos)
 - `rag_app/agent.py` – planejador de consultas (QueryPlanner via OpenAI)
 - `rag_app/utils.py` – logging, hashes, tokens, helpers
 - `scripts/index_realtime.py` – driver de indexação em tempo real
-- `scripts/test_retrieval.py` – driver dos testes de recuperação
+- `scripts/test_retrieval.py` — driver dos testes de recuperação
+- `scripts/qa.py` — CLI para perguntas e respostas com síntese e citações
 - `tests/**` – suíte de testes
 
 Manutenção e Dicas
@@ -122,6 +123,13 @@ Exemplos Rápidos
   - `make index-realtime`
 - Testar recuperação em lote com HyDE global ligado (padrão) e JSON de consultas:
   - `make test-batch QUERIES_FILE=tests/queries.json OUTPUT_FILE=data/retrieval_results.jsonl`
+
+Perguntas e Respostas (Síntese com Citações)
+- Pré-requisitos: base indexada e variáveis `PG_DSN` e `OPENAI_API_KEY` definidas.
+- Execução:
+  - `python scripts/qa.py "Qual o volume total de cadeiras giratórias licitadas no último trimestre?"`
+  - Opcional: `--top-k 5 --quota 2 --model gpt-4o-mini`
+  - O script usa o planejador para extrair filtros, recupera contextos multi-estratégia com diversidade por documento e gera uma resposta final com citações `[doc_id:páginas]`.
 
 Suporte
 - Ajustes finos podem ser feitos diretamente em `config/config.yml`. Caso queira, habilite/disable HyDE por estratégia em `retrieval_testing.per_strategy.<nome>.hyde.enabled`.

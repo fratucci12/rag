@@ -124,7 +124,15 @@ def initialize_database(config: Dict[str, Any]):
     conn = connect_pg(dsn)
     try:
         model_cfg = config["models"]
-        embedding_dim = model_cfg["openai"]["embedding_dim"]
+        # Seleciona dimensão conforme backend padrão
+        backend_name = model_cfg.get("default_backend", "openai")
+        if backend_name == "local":
+            embedding_dim = model_cfg.get("local", {}).get("embedding_dim")
+        else:
+            embedding_dim = model_cfg.get("openai", {}).get("embedding_dim")
+        if not embedding_dim:
+            # fallback seguro
+            embedding_dim = 1536
         docs_table = config["database"]["docs_table"]
         chunks_prefix = config["database"]["chunks_prefix"]
         use_hnsw = config["database"]["index_type"] == "hnsw"

@@ -28,6 +28,11 @@ models:
     embedding_model: "text-embedding-3-small"
     embedding_dim: 1536
 
+# --- Configurações do Agente (planner/synthesizer) ---
+agent:
+  planner_model: "gpt-4o-mini"       # usado para extrair consulta semântica e filtros
+  synthesizer_model: "gpt-4o-mini"   # usado para gerar resposta final com citações
+
 # --- Configurações de Lotes (Batch API) ---
 batch_processing:
   # Limite total de tokens por ficheiro de lote (JSONL)
@@ -67,7 +72,7 @@ retrieval_testing:
   # Arquivo de saída para os resultados do modo batch
   output_file: "tests/test_results.jsonl"
   # Quantos resultados de topo retornar por busca (default)
-  top_k: 8
+  top_k: 5
   # Ativa a avaliação com um LLM como juiz
   evaluate_with_llm: true
   # Modelo LLM a ser usado como juiz (requer chave da OpenAI)
@@ -77,8 +82,8 @@ retrieval_testing:
   # Threshold do juiz LLM para considerar um "hit" (exibe na tabela)
   judge_threshold: 4
   # Parâmetros padrão para retrieval (podem ser sobrescritos por estratégia)
-  candidates: 30   # candidatos iniciais para re-ranking
-  rrf_k: 80        # parâmetro K do RRF na busca híbrida
+  candidates: 20   # candidatos iniciais para re-ranking
+  rrf_k: 100        # parâmetro K do RRF na busca híbrida
   # Configuração HyDE padrão (pode ser sobrescrita por estratégia)
   hyde:
     enabled: false

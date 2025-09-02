@@ -145,15 +145,24 @@ def hybrid_search_rrf(
     where_clause, params = _build_where_clause(filters)
     where_clause_fts = where_clause.replace("WHERE", "AND") if where_clause else ""
 
-    fts_sql = f"""
-        SELECT chunk_id::text FROM {table}
-        WHERE to_tsvector('portuguese', text) @@ websearch_to_tsquery('portuguese', %s) {where_clause_fts}
-        ORDER BY ts_rank(to_tsvector('portuguese', text), websearch_to_tsquery('portuguese', %s)) DESC
-        LIMIT 20
-    """
-    cur.execute(
-        fts_sql, [query, query] + params
-    )  # Corrigido para passar a query duas vezes
+    # tenta via coluna ts/unaccent (mais rápido e robusto)
+    try:
+        fts_sql = f"""
+            SELECT chunk_id::text FROM {table}
+            WHERE ts @@ websearch_to_tsquery('portuguese', unaccent(%s)) {where_clause_fts}
+            ORDER BY ts_rank(ts, websearch_to_tsquery('portuguese', unaccent(%s))) DESC
+            LIMIT 20
+        """
+        cur.execute(fts_sql, [query, query] + params)
+    except Exception:
+        # fallback: computa tsvector on-the-fly sem unaccent
+        fts_sql = f"""
+            SELECT chunk_id::text FROM {table}
+            WHERE to_tsvector('portuguese', text) @@ websearch_to_tsquery('portuguese', %s) {where_clause_fts}
+            ORDER BY ts_rank(to_tsvector('portuguese', text), websearch_to_tsquery('portuguese', %s)) DESC
+            LIMIT 20
+        """
+        cur.execute(fts_sql, [query, query] + params)
     keyword_results = [(row[0], i + 1) for i, row in enumerate(cur.fetchall())]
 
     vec_sql = f"SELECT chunk_id::text FROM {table} {where_clause} ORDER BY embedding <=> %s::vector LIMIT 20"
@@ -575,3 +584,127 @@ def run_tests(
                 "run.finish",
                 message=f"Resultados detalhados do teste salvos em: {output_path_str}",
             )
+
+
+# --- Helpers adicionais para Q&A com síntese ---
+def get_doc_ids_for_chunks(cur, table: str, chunk_ids: list[str]) -> dict[str, str]:
+    """Resolve doc_id para uma lista de chunk_ids numa tabela específica."""
+    if not chunk_ids:
+        return {}
+    cur.execute(
+        f"SELECT chunk_id::text, doc_id FROM {table} WHERE chunk_id::text = ANY(%s)",
+        (chunk_ids,),
+    )
+    return {row[0]: row[1] for row in cur.fetchall()}
+
+
+def retrieve_contexts(
+    config: Dict[str, Any],
+    plan: Dict[str, Any],
+    *,
+    per_strategy_top_k: int = 5,
+    method: str = "Hybrid+Re-Ranking",
+) -> list[Dict[str, Any]]:
+    """Executa a recuperação multi-estratégia e retorna contextos com doc_id e metadados.
+
+    Retorna uma lista com itens: {text, page_start, page_end, chunk_id, doc_id, strategy, table, score}
+    """
+    dsn = os.getenv("PG_DSN")
+    if not dsn:
+        raise RuntimeError("PG_DSN não definido")
+
+    model_cfg = config["models"]
+    backend_name = model_cfg["default_backend"]
+    backend = (
+        LocalBackend(model_cfg["local"]["embedding_model"]) if backend_name == "local" else OpenAIBackend(model_cfg["openai"]["embedding_model"])
+    )
+
+    test_cfg = config.get("retrieval_testing", {}) or {}
+    reranker_model = test_cfg.get(
+        "reranker_model", "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    )
+    hyde_defaults = test_cfg.get("hyde", {}) or {}
+
+    strategy_tables = [
+        (tag, f"{config['database']['chunks_prefix']}_{tag}") for tag in config["strategies"]
+    ]
+
+    semantic_query = plan.get("semantic_query") or plan.get("text") or ""
+    filters = plan.get("filters") or {}
+
+    out_contexts: list[Dict[str, Any]] = []
+    conn = connect_pg(dsn)
+    try:
+        with conn.cursor() as cur:
+            for tag, table_name in strategy_tables:
+                per_strategy = (test_cfg.get("per_strategy", {}) or {}).get(tag, {})
+                hyde_cfg = (per_strategy.get("hyde") or {})
+                hyde_enabled = bool(
+                    hyde_cfg.get("enabled", (hyde_defaults.get("enabled", False)))
+                )
+                hyde_model = hyde_cfg.get("model", hyde_defaults.get("model", "gpt-3.5-turbo"))
+
+                semantic_for_embedding = (
+                    hyde_generate_text(semantic_query, model=hyde_model)
+                    if hyde_enabled
+                    else semantic_query
+                ) or semantic_query
+
+                query_embedding = backend.embed([semantic_for_embedding])[0]
+
+                # Executa método escolhido
+                results: list[Dict[str, Any]] = []
+                if method == "Similarity":
+                    results = basic_similarity_search(
+                        cur, query_embedding, table_name, per_strategy_top_k, filters
+                    )
+                elif method == "Hybrid":
+                    results = hybrid_search_rrf(
+                        cur,
+                        semantic_query,
+                        query_embedding,
+                        table_name,
+                        per_strategy_top_k,
+                        filters,
+                        k=int(test_cfg.get("rrf_k", 60)),
+                    )
+                elif method == "Re-Ranking":
+                    results = rerank_with_cross_encoder(
+                        cur,
+                        semantic_query,
+                        query_embedding,
+                        table_name,
+                        reranker_model,
+                        per_strategy_top_k,
+                        filters,
+                        candidates=int(test_cfg.get("candidates", 25)),
+                    )
+                else:  # Hybrid+Re-Ranking
+                    results = hybrid_then_rerank(
+                        cur,
+                        semantic_query,
+                        query_embedding,
+                        table_name,
+                        reranker_model,
+                        per_strategy_top_k,
+                        filters,
+                        candidates=int(test_cfg.get("candidates", 25)),
+                        rrf_k=int(test_cfg.get("rrf_k", 60)),
+                    )
+
+                # anexa doc_id e metadados úteis
+                chunk_ids = [r["chunk_id"] for r in results]
+                doc_map = get_doc_ids_for_chunks(cur, table_name, chunk_ids)
+                for r in results:
+                    out_contexts.append(
+                        {
+                            **r,
+                            "doc_id": doc_map.get(r["chunk_id"]),
+                            "table": table_name,
+                            "strategy": tag,
+                        }
+                    )
+    finally:
+        conn.close()
+
+    return out_contexts
