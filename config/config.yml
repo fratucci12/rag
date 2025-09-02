@@ -66,7 +66,7 @@ retrieval_testing:
   query_file: "tests/queries.json"
   # Arquivo de saída para os resultados do modo batch
   output_file: "tests/test_results.jsonl"
-  # Quantos resultados de topo retornar por busca
+  # Quantos resultados de topo retornar por busca (default)
   top_k: 5
   # Ativa a avaliação com um LLM como juiz
   evaluate_with_llm: true
@@ -74,3 +74,38 @@ retrieval_testing:
   judge_model: "gpt-4o-mini"
 
   reranker_model: "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
+  # Threshold do juiz LLM para considerar um "hit" (exibe na tabela)
+  judge_threshold: 4
+  # Parâmetros padrão para retrieval (podem ser sobrescritos por estratégia)
+  candidates: 25   # candidatos iniciais para re-ranking
+  rrf_k: 60        # parâmetro K do RRF na busca híbrida
+  # Configuração HyDE padrão (pode ser sobrescrita por estratégia)
+  hyde:
+    enabled: false
+    model: "gpt-3.5-turbo"
+  # Lista de métodos a executar; pode ser sobrescrita por estratégia
+  methods:
+    - "Similarity"
+    - "Hybrid"
+    - "Re-Ranking"
+    - "Hybrid+Re-Ranking"
+  # Overrides por estratégia (nome deve bater com a chave em 'strategies')
+  per_strategy:
+    # exemplo de override (descomente e ajuste conforme necessidade):
+    # pages_1500x400:
+    #   top_k: 8
+    #   candidates: 30
+    #   rrf_k: 80
+    #   methods: ["Hybrid+Re-Ranking"]
+    #   hyde:
+    #     enabled: true
+    #     model: "gpt-4o-mini"
+  # Métodos de recuperação a executar (em ordem)
+  methods:
+    - "Similarity"
+    - "Hybrid"
+    - "Re-Ranking"
+    - "Hybrid+Re-Ranking"
+    - "HyDE"
+  # Modelo para gerar texto hipotético no HyDE
+  hyde_model: "gpt-3.5-turbo"

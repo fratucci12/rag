@@ -67,6 +67,31 @@ class LLMEvaluator:
             return None
 
 
+def hyde_generate_text(query: str, model: str = "gpt-3.5-turbo") -> Optional[str]:
+    """Gera um texto hipotético (HyDE) a partir da pergunta para melhorar a busca vetorial.
+    Se houver falha, retorna None e o chamador pode fazer fallback para a própria query.
+    """
+    try:
+        client = OpenAI()
+        system = (
+            "Gere um parágrafo conciso, informativo e factual que pareça uma resposta a "
+            "uma pergunta de busca. Evite opiniões; foque em termos e entidades concretas."
+        )
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": query},
+            ],
+            temperature=0.3,
+            max_tokens=300,
+        )
+        return (resp.choices[0].message.content or "").strip()
+    except Exception as e:
+        log("hyde.generate.error", error=str(e))
+        return None
+
+
 def _build_where_clause(filters: Dict[str, Any]) -> (str, List[Any]):
     """Constrói a cláusula WHERE e os parâmetros para a consulta SQL a partir dos filtros."""
     if not filters:
@@ -201,7 +226,68 @@ def rerank_with_cross_encoder(
     return sorted(initial_results, key=lambda x: x["score"], reverse=True)[:top_k]
 
 
-def display_batch_results_table(console: Console, all_results: List[Dict]):
+def hyde_search(
+    cur,
+    query: str,
+    backend,
+    table: str,
+    top_k: int,
+    filters: Dict,
+    hyde_model: str,
+) -> List[Dict[str, Any]]:
+    """Aplica HyDE: gera um texto hipotético com LLM, embeda e busca por similaridade."""
+    hyde_text = hyde_generate_text(query, model=hyde_model) or query
+    try:
+        emb = backend.embed([hyde_text])[0]
+    except Exception as e:
+        log("hyde.embed.error", error=str(e))
+        return []
+    return basic_similarity_search(cur, emb, table, top_k, filters)
+
+
+def hybrid_then_rerank(
+    cur,
+    query: str,
+    query_embedding: list[float],
+    table: str,
+    reranker_model: str,
+    top_k: int,
+    filters: Dict,
+    *,
+    candidates: int = 25,
+    rrf_k: int = 60,
+) -> List[Dict[str, Any]]:
+    """
+    Combina a busca Híbrida (RRF entre FTS e Vetorial) para obter candidatos
+    e aplica re-ranking com CrossEncoder.
+    """
+    initial_results = hybrid_search_rrf(
+        cur, query, query_embedding, table, candidates, filters, k=rrf_k
+    )
+    if not initial_results:
+        return []
+
+    MAX_QUERY_CHARS = 300
+    MAX_DOC_CHARS = 1400
+
+    truncated_query = query[:MAX_QUERY_CHARS]
+    pairs = [
+        [truncated_query, (res.get("text") or "")[:MAX_DOC_CHARS]]
+        for res in initial_results
+    ]
+
+    cross_encoder = CrossEncoder(reranker_model)
+    scores = cross_encoder.predict(pairs)
+
+    for res, score in zip(initial_results, scores):
+        res["score"] = float(score)
+
+    return sorted(initial_results, key=lambda x: x["score"], reverse=True)[:top_k]
+
+
+def display_batch_results_table(
+    console: Console, all_results: List[Dict], judge_threshold: int = 4
+):
     """Exibe os resultados compilados de TODAS as queries (usado no modo batch)."""
     console.rule("[bold green]RELATÓRIO FINAL COMPARATIVO DE ESTRATÉGIAS[/]")
     console.print("Resultados Compilados de Todas as Perguntas", justify="center")
@@ -240,7 +326,7 @@ def display_batch_results_table(console: Console, all_results: List[Dict]):
 
                 top_1_hit = (
                     "[green]True[/]"
-                    if results[0].get("llm_judge_score", 0) >= 4
+                    if results[0].get("llm_judge_score", 0) >= judge_threshold
                     else "[red]False[/]"
                 )
                 top_1_score = results[0].get("llm_judge_score", "N/A")
@@ -254,7 +340,7 @@ def display_batch_results_table(console: Console, all_results: List[Dict]):
                 )
                 mrr = 0.0
                 for i, res in enumerate(results):
-                    if res.get("llm_judge_score", 0) >= 4:
+                    if res.get("llm_judge_score", 0) >= judge_threshold:
                         mrr = 1.0 / (i + 1)
                         break
 
@@ -304,6 +390,17 @@ def run_tests(
         "reranker_model", "cross-encoder/ms-marco-MiniLM-L-6-v2"
     )
     log("reranker.init", model=reranker_model)
+    # Config HyDE (defaults); pode ser sobrescrita por estratégia
+    hyde_defaults = test_cfg.get("hyde", {}) or {}
+    hyde_model_default = (
+        hyde_defaults.get("model")
+        or test_cfg.get("hyde_model")
+        or "gpt-3.5-turbo"
+    )
+    # Métodos padrão (sem HyDE como método separado)
+    default_methods = ["Similarity", "Hybrid", "Re-Ranking", "Hybrid+Re-Ranking"]
+    # Threshold global para considerar "hit"
+    judge_threshold = int(test_cfg.get("judge_threshold", 4))
 
     strategy_tables = [
         f"{config['database']['chunks_prefix']}_{tag}" for tag in config["strategies"]
@@ -330,33 +427,89 @@ def run_tests(
             semantic_query = plan["semantic_query"]
             filters = plan["filters"]
 
-            query_embedding = backend.embed([semantic_query])[0]
+            # Config por estratégia
+            strategy_name = table_name.replace(f"{config['database']['chunks_prefix']}_", "")
+            per_strategy = (test_cfg.get("per_strategy", {}) or {}).get(
+                strategy_name, {}
+            )
+            methods_cfg = per_strategy.get("methods") or test_cfg.get("methods") or default_methods
+            top_k_cfg = int(per_strategy.get("top_k", test_cfg.get("top_k", 5)))
+            candidates_cfg = int(per_strategy.get("candidates", test_cfg.get("candidates", 25)))
+            rrf_k_cfg = int(per_strategy.get("rrf_k", test_cfg.get("rrf_k", 60)))
+
+            # HyDE por estratégia
+            hyde_cfg = (per_strategy.get("hyde") or {})
+            hyde_enabled = bool(
+                hyde_cfg.get("enabled", (hyde_defaults.get("enabled", False)))
+            )
+            hyde_model = hyde_cfg.get("model", hyde_model_default)
+
+            # Gera embedding com ou sem HyDE
+            semantic_for_embedding = (
+                hyde_generate_text(semantic_query, model=hyde_model)
+                if hyde_enabled
+                else semantic_query
+            ) or semantic_query
+            query_embedding = backend.embed([semantic_for_embedding])[0]
             results_for_all_strategies = {}
 
             for table_name in strategy_tables:
                 with conn.cursor() as cur:
-                    methods = {
-                        "Similarity": basic_similarity_search(
-                            cur, query_embedding, table_name, test_cfg["top_k"], filters
-                        ),
-                        "Hybrid": hybrid_search_rrf(
-                            cur,
-                            semantic_query,
-                            query_embedding,
-                            table_name,
-                            test_cfg["top_k"],
-                            filters,
-                        ),
-                        "Re-Ranking": rerank_with_cross_encoder(
-                            cur,
-                            semantic_query,
-                            query_embedding,
-                            table_name,
-                            reranker_model,
-                            test_cfg["top_k"],
-                            filters,
-                        ),
-                    }
+                    methods = {}
+                    for name in methods_cfg:
+                        try:
+                            if name == "Similarity":
+                                methods[name] = basic_similarity_search(
+                                    cur,
+                                    query_embedding,
+                                    table_name,
+                                    top_k_cfg,
+                                    filters,
+                                )
+                            elif name == "Hybrid":
+                                methods[name] = hybrid_search_rrf(
+                                    cur,
+                                    semantic_query,
+                                    query_embedding,
+                                    table_name,
+                                    top_k_cfg,
+                                    filters,
+                                    k=rrf_k_cfg,
+                                )
+                            elif name == "Re-Ranking":
+                                methods[name] = rerank_with_cross_encoder(
+                                    cur,
+                                    semantic_query,
+                                    query_embedding,
+                                    table_name,
+                                    reranker_model,
+                                    top_k_cfg,
+                                    filters,
+                                    candidates=candidates_cfg,
+                                )
+                            elif name == "Hybrid+Re-Ranking":
+                                methods[name] = hybrid_then_rerank(
+                                    cur,
+                                    semantic_query,
+                                    query_embedding,
+                                    table_name,
+                                    reranker_model,
+                                    top_k_cfg,
+                                    filters,
+                                    candidates=candidates_cfg,
+                                    rrf_k=rrf_k_cfg,
+                                )
+                            elif name == "HyDE":
+                                # Compatibilidade retroativa: trata "HyDE" como Similarity com HyDE forçado
+                                _emb_text = hyde_generate_text(
+                                    semantic_query, model=hyde_model
+                                ) or semantic_query
+                                _emb = backend.embed([_emb_text])[0]
+                                methods[name] = basic_similarity_search(
+                                    cur, _emb, table_name, top_k_cfg, filters
+                                )
+                        except Exception as e:
+                            log("retrieval.method.error", method=name, error=str(e))
 
                     for method_name, results_list in methods.items():
                         for res in results_list:
@@ -383,10 +536,14 @@ def run_tests(
 
         if interactive_mode and all_results_for_all_queries:
             # No modo interativo, mostramos a tabela de apenas uma pergunta
-            display_batch_results_table(console, all_results_for_all_queries)
+            display_batch_results_table(
+                console, all_results_for_all_queries, judge_threshold
+            )
         elif not interactive_mode:
             # No modo batch, mostramos a tabela consolidada no final
-            display_batch_results_table(console, all_results_for_all_queries)
+            display_batch_results_table(
+                console, all_results_for_all_queries, judge_threshold
+            )
 
     finally:
         conn.close()
