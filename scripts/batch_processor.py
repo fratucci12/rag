@@ -24,7 +24,6 @@ except ImportError:
     def tqdm(x, **kw):
         return x
 
-
 try:
     from rich import print
 except ImportError:
