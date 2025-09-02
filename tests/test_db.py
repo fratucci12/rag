@@ -91,7 +91,8 @@ def test_upsert_document_uses_expected_params():
     assert cur.executed, "deve executar INSERT ... ON CONFLICT"
     params = cur.params[-1]
     assert params[0] == "doc-1"
-    assert params[1] == "s1"
+    # Agora sha256 usa sha256_doc quando disponvel
+    assert params[1] == "d1"
     assert params[2] == "d1"
 
 

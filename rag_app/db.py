@@ -83,6 +83,8 @@ def ensure_schema(conn, docs_table: str, chunk_table: str, dim: int, use_hnsw: b
 
 # --- Funções de Manipulação de Dados ---
 def upsert_document(cur, docs_table, doc_id, entry, sha256_doc=None):
+    # Preenche 'sha256' com o hash do PDF (sha256_doc) quando disponvel
+    sha_for_row = sha256_doc or entry.get("sha256")
     cur.execute(
         f"""
         INSERT INTO {docs_table} (doc_id, sha256, sha256_doc, file_path, source_url, content_type, meta)
@@ -93,7 +95,7 @@ def upsert_document(cur, docs_table, doc_id, entry, sha256_doc=None):
         """,
         (
             doc_id,
-            entry.get("sha256"),
+            sha_for_row,
             sha256_doc or entry.get("sha256_doc"),
             entry.get("file_path"),
             entry.get("source_url"),

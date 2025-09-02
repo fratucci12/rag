@@ -1,6 +1,6 @@
 # Makefile para orquestrar o projeto de RAG
 
-.PHONY: help install db-init index-realtime index-batch test-interactive test pre-commit-install pre-commit pre-commit-update
+.PHONY: help install db-init index-realtime index-batch test-interactive test test-batch pre-commit-install pre-commit pre-commit-update
 
 help:
 	@echo "---------------------------------------------------------------------"
@@ -21,6 +21,7 @@ help:
 	@echo ""
 	@echo "Testes:"
 	@echo "  make test-interactive-> Testa a busca com uma pergunta interativa no terminal."
+	@echo "  make test-batch      -> Roda testes de recuperacao em lote a partir de um JSON."
 	@echo "---------------------------------------------------------------------"
 
 # --- Comandos de Setup ---
@@ -63,3 +64,9 @@ index-batch:
 test-interactive:
 	@echo "--> A iniciar teste de recuperacao interativo..."
 	python scripts/test_retrieval.py --interactive
+
+# Executa em lote lendo um ficheiro JSON de consultas. Pode ajustar com
+#   make test-batch QUERIES_FILE=tests/queries.json OUTPUT_FILE=data/retrieval_results.jsonl
+test-batch:
+	@echo "--> A executar teste de recuperacao em lote..."
+	python -c "import os,sys,subprocess; q=os.environ.get('QUERIES_FILE','tests/queries.json'); o=os.environ.get('OUTPUT_FILE','data/retrieval_results.jsonl'); sys.exit(subprocess.call([sys.executable,'scripts/test_retrieval.py','--query-file',q,'--output-file',o]))"
