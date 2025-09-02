@@ -427,33 +427,45 @@ def run_tests(
             semantic_query = plan["semantic_query"]
             filters = plan["filters"]
 
-            # Config por estratégia
-            strategy_name = table_name.replace(f"{config['database']['chunks_prefix']}_", "")
-            per_strategy = (test_cfg.get("per_strategy", {}) or {}).get(
-                strategy_name, {}
-            )
-            methods_cfg = per_strategy.get("methods") or test_cfg.get("methods") or default_methods
-            top_k_cfg = int(per_strategy.get("top_k", test_cfg.get("top_k", 5)))
-            candidates_cfg = int(per_strategy.get("candidates", test_cfg.get("candidates", 25)))
-            rrf_k_cfg = int(per_strategy.get("rrf_k", test_cfg.get("rrf_k", 60)))
-
-            # HyDE por estratégia
-            hyde_cfg = (per_strategy.get("hyde") or {})
-            hyde_enabled = bool(
-                hyde_cfg.get("enabled", (hyde_defaults.get("enabled", False)))
-            )
-            hyde_model = hyde_cfg.get("model", hyde_model_default)
-
-            # Gera embedding com ou sem HyDE
-            semantic_for_embedding = (
-                hyde_generate_text(semantic_query, model=hyde_model)
-                if hyde_enabled
-                else semantic_query
-            ) or semantic_query
-            query_embedding = backend.embed([semantic_for_embedding])[0]
             results_for_all_strategies = {}
 
             for table_name in strategy_tables:
+                # Config por estratégia (baseado no nome da tabela atual)
+                strategy_name = table_name.replace(
+                    f"{config['database']['chunks_prefix']}_", ""
+                )
+                per_strategy = (test_cfg.get("per_strategy", {}) or {}).get(
+                    strategy_name, {}
+                )
+                methods_cfg = (
+                    per_strategy.get("methods")
+                    or test_cfg.get("methods")
+                    or default_methods
+                )
+                top_k_cfg = int(
+                    per_strategy.get("top_k", test_cfg.get("top_k", 5))
+                )
+                candidates_cfg = int(
+                    per_strategy.get("candidates", test_cfg.get("candidates", 25))
+                )
+                rrf_k_cfg = int(
+                    per_strategy.get("rrf_k", test_cfg.get("rrf_k", 60))
+                )
+
+                # HyDE por estratégia
+                hyde_cfg = (per_strategy.get("hyde") or {})
+                hyde_enabled = bool(
+                    hyde_cfg.get("enabled", (hyde_defaults.get("enabled", False)))
+                )
+                hyde_model = hyde_cfg.get("model", hyde_model_default)
+
+                # Gera embedding com ou sem HyDE
+                semantic_for_embedding = (
+                    hyde_generate_text(semantic_query, model=hyde_model)
+                    if hyde_enabled
+                    else semantic_query
+                ) or semantic_query
+                query_embedding = backend.embed([semantic_for_embedding])[0]
                 with conn.cursor() as cur:
                     methods = {}
                     for name in methods_cfg:
