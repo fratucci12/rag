@@ -138,12 +138,12 @@ def ensure_schema(conn, docs_table: str, chunk_table: str, dim: int, use_hnsw: b
                 try:
                     cur.execute("SAVEPOINT sp_fts_trg")
                     cur.execute(f"ALTER TABLE {chunk_table} ADD COLUMN IF NOT EXISTS ts tsvector;")
-                    # tenta função com unaccent; se falhar, cria sem unaccent
+                # tenta função com unaccent (forma com dicionário explícito); se falhar, cria sem unaccent
                     try:
                         cur.execute(
                             f"CREATE OR REPLACE FUNCTION {chunk_table}_update_ts() RETURNS trigger AS $$\n"
                             "BEGIN\n"
-                            f"  NEW.ts := to_tsvector('portuguese', unaccent(NEW.text));\n"
+                            f"  NEW.ts := to_tsvector('portuguese', unaccent('unaccent'::regdictionary, NEW.text));\n"
                             "  RETURN NEW;\n"
                             "END;\n"
                             "$$ LANGUAGE plpgsql;"
