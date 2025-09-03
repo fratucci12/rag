@@ -18,12 +18,40 @@ from openai import OpenAI
 from tqdm import tqdm
 
 
+# --- Provider-aware client factory for the Judge (OpenAI/OpenRouter)
+OPENAI_DEFAULT_BASE = os.getenv("OPENAI_BASE", "https://api.openai.com/v1")
+OPENROUTER_DEFAULT_BASE = os.getenv("OPENROUTER_BASE", "https://openrouter.ai/api/v1")
+
+
+def _make_llm_client() -> OpenAI:
+    provider = os.getenv("LLM_PROVIDER", "openai").lower()
+    if provider == "openrouter":
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise RuntimeError("Defina a variável de ambiente OPENROUTER_API_KEY")
+        default_headers = {}
+        if os.getenv("OPENROUTER_HTTP_REFERER"):
+            default_headers["HTTP-Referer"] = os.getenv("OPENROUTER_HTTP_REFERER")
+        if os.getenv("OPENROUTER_X_TITLE"):
+            default_headers["X-Title"] = os.getenv("OPENROUTER_X_TITLE")
+        return OpenAI(
+            base_url=OPENROUTER_DEFAULT_BASE,
+            api_key=api_key,
+            default_headers=default_headers or None,
+        )
+    # default: openai
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("Defina a variável de ambiente OPENAI_API_KEY")
+    return OpenAI(base_url=OPENAI_DEFAULT_BASE, api_key=api_key)
+
+
 class LLMEvaluator:
     """Usa um LLM generativo para avaliar a relevância de um contexto para uma pergunta."""
 
     def __init__(self, model: str = "gpt-3.5-turbo"):
         try:
-            self.client = OpenAI()
+            self.client = _make_llm_client()
         except Exception as e:
             raise RuntimeError(
                 "Erro ao inicializar cliente OpenAI. Verifique a sua chave de API."
@@ -72,7 +100,7 @@ def hyde_generate_text(query: str, model: str = "gpt-3.5-turbo") -> Optional[str
     Se houver falha, retorna None e o chamador pode fazer fallback para a própria query.
     """
     try:
-        client = OpenAI()
+        client = _make_llm_client()
         system = (
             "Gere um parágrafo conciso, informativo e factual que pareça uma resposta a "
             "uma pergunta de busca. Evite opiniões; foque em termos e entidades concretas."
