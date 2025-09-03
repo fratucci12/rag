@@ -10,8 +10,8 @@ def select_diverse_contexts(
     contexts: List[Dict[str, Any]],
     *,
     per_doc_quota: int = 2,
-    max_chunks: int = 12,
-    max_chars_per_chunk: int = 1200,
+    max_chunks: int = 24,
+    max_chars_per_chunk: int = 2000,
 ) -> List[Dict[str, Any]]:
     """Seleciona trechos maximizando diversidade por documento e qualidade (score).
 
