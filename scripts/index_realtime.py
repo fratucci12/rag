@@ -6,8 +6,12 @@ import argparse
 from pathlib import Path
 from dotenv import load_dotenv
 
+# Carrega .env do projeto ANTES dos imports do app
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(PROJECT_ROOT / ".env")
+
 # Adiciona o diretório raiz ao path para permitir importações de 'rag_app'
-sys.path.append(str(Path(__file__).resolve().parents[1]))
+sys.path.append(str(PROJECT_ROOT))
 
 from rag_app.core_realtime import process_documents_realtime, initialize_database
 from rag_app.utils import load_config, log
@@ -15,7 +19,7 @@ from rag_app.utils import load_config, log
 
 def main():
     """Função principal que orquestra a indexação em tempo real."""
-    load_dotenv()
+    load_dotenv(PROJECT_ROOT / ".env")
 
     parser = argparse.ArgumentParser(
         description="Script para indexar documentos em tempo real."

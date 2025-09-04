@@ -6,8 +6,12 @@ import argparse
 from pathlib import Path
 from dotenv import load_dotenv
 
+# Carrega .env do projeto ANTES dos imports do app
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(PROJECT_ROOT / ".env")
+
 # path para importar rag_app
-sys.path.append(str(Path(__file__).resolve().parents[1]))
+sys.path.append(str(PROJECT_ROOT))
 
 from rag_app.utils import load_config, log
 from rag_app.agent import QueryPlanner
@@ -16,7 +20,8 @@ from rag_app.answer import select_diverse_contexts, synthesize_answer
 
 
 def main():
-    load_dotenv()
+    # Reforço caso seja executado fora do diretório do projeto
+    load_dotenv(PROJECT_ROOT / ".env")
 
     parser = argparse.ArgumentParser(description="Perguntas e Respostas (RAG) com síntese e citações")
     parser.add_argument("question", nargs="?", help="Pergunta em linguagem natural")

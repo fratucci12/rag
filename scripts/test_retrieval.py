@@ -7,8 +7,12 @@ import json
 from pathlib import Path
 from dotenv import load_dotenv
 
+# Aponta explicitamente para o .env do projeto e carrega ANTES dos imports do app
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(PROJECT_ROOT / ".env")
+
 # Adiciona o diretório raiz ao path para permitir importações de 'rag_app'
-sys.path.append(str(Path(__file__).resolve().parents[1]))
+sys.path.append(str(PROJECT_ROOT))
 
 from rag_app.retrieval import run_tests
 from rag_app.utils import load_config, log
@@ -16,7 +20,8 @@ from rag_app.agent import QueryPlanner
 
 
 def main():
-    load_dotenv()
+    # Já carregado no topo; manter aqui para compatibilidade se executar fora do repo
+    load_dotenv(PROJECT_ROOT / ".env")
 
     parser = argparse.ArgumentParser(
         description="Script para testar estratégias de recuperação."

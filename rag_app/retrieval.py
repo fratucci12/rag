@@ -73,9 +73,9 @@ class LLMEvaluator:
 
     def evaluate_chunk(self, query: str, context: str) -> Optional[int]:
         log("llm_judge.evaluate.start", model=self.model)
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
+        def _call(model_id: str) -> Optional[int]:
+            resp = self.client.chat.completions.create(
+                model=model_id,
                 messages=[
                     {"role": "system", "content": self.system_prompt},
                     {
@@ -86,13 +86,32 @@ class LLMEvaluator:
                 temperature=0,
                 max_tokens=5,
             )
-            score_text = response.choices[0].message.content.strip()
-            score = int(re.search(r"\d+", score_text).group())
-            log("llm_judge.evaluate.done", score=score)
-            return score
+            score_text = (resp.choices[0].message.content or "").strip()
+            m = re.search(r"\d+", score_text)
+            if not m:
+                return None
+            return int(m.group())
+
+        try:
+            score = _call(self.model)
+            if score is not None:
+                log("llm_judge.evaluate.done", score=score)
+                return score
         except Exception as e:
             log("llm_judge.evaluate.error", error=str(e))
-            return None
+
+        # Fallback on invalid model or provider mismatch
+        try:
+            fallback_model = os.getenv("JUDGE_FALLBACK_MODEL", "gpt-4o-mini")
+            log("llm_judge.evaluate.start", model=fallback_model)
+            score = _call(fallback_model)
+            if score is not None:
+                log("llm_judge.evaluate.done", score=score)
+                return score
+        except Exception as e:
+            log("llm_judge.evaluate.error", error=str(e))
+
+        return None
 
 
 def hyde_generate_text(query: str, model: str = "gpt-3.5-turbo") -> Optional[str]:
@@ -149,6 +168,21 @@ def basic_similarity_search(
     """
 
     cur.execute(sql, [query_embedding_str] + params + [top_k])
+    rows = cur.fetchall()
+    if not rows and filters:
+        # Relax filters if nothing found
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
+        sql_nf = f"""
+            SELECT text, page_start, page_end, 1 - (embedding <=> %s::vector) AS similarity, chunk_id::text
+            FROM {table}
+            ORDER BY similarity DESC LIMIT %s
+        """
+        cur.execute(sql_nf, [query_embedding_str, top_k])
+        rows = cur.fetchall()
+
     return [
         {
             "text": r[0],
@@ -157,7 +191,7 @@ def basic_similarity_search(
             "score": float(r[3]),
             "chunk_id": r[4],
         }
-        for r in cur.fetchall()
+        for r in rows
     ]
 
 
@@ -181,21 +215,59 @@ def hybrid_search_rrf(
             ORDER BY ts_rank(ts, websearch_to_tsquery('portuguese', unaccent(%s))) DESC
             LIMIT 20
         """
-        cur.execute(fts_sql, [query, query] + params)
+        cur.execute(fts_sql, [query] + params + [query])
     except Exception:
-        # fallback: computa tsvector on-the-fly sem unaccent
+        # rollback before fallback to clear aborted transaction state
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
+        # fallback: compute tsvector on-the-fly without unaccent
         fts_sql = f"""
             SELECT chunk_id::text FROM {table}
             WHERE to_tsvector('portuguese', text) @@ websearch_to_tsquery('portuguese', %s) {where_clause_fts}
             ORDER BY ts_rank(to_tsvector('portuguese', text), websearch_to_tsquery('portuguese', %s)) DESC
             LIMIT 20
         """
-        cur.execute(fts_sql, [query, query] + params)
+        cur.execute(fts_sql, [query] + params + [query])
     keyword_results = [(row[0], i + 1) for i, row in enumerate(cur.fetchall())]
 
     vec_sql = f"SELECT chunk_id::text FROM {table} {where_clause} ORDER BY embedding <=> %s::vector LIMIT 20"
     cur.execute(vec_sql, params + [str(query_embedding)])
     vector_results = [(row[0], i + 1) for i, row in enumerate(cur.fetchall())]
+
+    # If both empty and filters exist, relax (remove filters) and try again
+    if not keyword_results and not vector_results and filters:
+        try:
+            try:
+                cur.connection.rollback()
+            except Exception:
+                pass
+            # FTS without filters (on-the-fly)
+            fts_sql_nf = f"""
+                SELECT chunk_id::text FROM {table}
+                WHERE to_tsvector('portuguese', text) @@ websearch_to_tsquery('portuguese', %s)
+                ORDER BY ts_rank(to_tsvector('portuguese', text), websearch_to_tsquery('portuguese', %s)) DESC
+                LIMIT 20
+            """
+            cur.execute(fts_sql_nf, [query, query])
+            keyword_results = [(row[0], i + 1) for i, row in enumerate(cur.fetchall())]
+        except Exception:
+            try:
+                cur.connection.rollback()
+            except Exception:
+                pass
+            keyword_results = []
+        try:
+            vec_sql_nf = f"SELECT chunk_id::text FROM {table} ORDER BY embedding <=> %s::vector LIMIT 20"
+            cur.execute(vec_sql_nf, [str(query_embedding)])
+            vector_results = [(row[0], i + 1) for i, row in enumerate(cur.fetchall())]
+        except Exception:
+            try:
+                cur.connection.rollback()
+            except Exception:
+                pass
+            vector_results = []
 
     rrf_scores = {}
     for chunk_id, rank in keyword_results:
@@ -452,15 +524,32 @@ def run_tests(
     try:
         pbar = tqdm(queries_to_process, desc="A processar perguntas")
         for query_item in pbar:
-            user_query = query_item["text"]
-            query_id = query_item.get("query_id", "N/A")
+            # Support two input shapes:
+            # 1) {"text": "...", ["query_id": "..."]}  -> generate plan here
+            # 2) {"semantic_query": "...", "filters": {...}} -> plan already provided (interactive mode)
+            user_query = ""
+            query_id = "N/A"
+            plan: Dict[str, Any]
+
+            if isinstance(query_item, dict) and "text" in query_item:
+                user_query = query_item.get("text", "")
+                query_id = query_item.get("query_id", "N/A")
+                plan = planner.analyze_query(user_query)
+            elif (
+                isinstance(query_item, dict)
+                and "semantic_query" in query_item
+                and "filters" in query_item
+            ):
+                plan = query_item  # already planned
+                # If original query is not available, use semantic query for display
+                user_query = plan.get("original_query", plan.get("semantic_query", ""))
+            else:
+                raise ValueError(
+                    "Invalid query item. Expected dict with 'text' or with 'semantic_query' and 'filters'."
+                )
+
             pbar.set_description(f"Query: {query_id}")
 
-            plan = (
-                planner.analyze_query(user_query)
-                if not interactive_mode
-                else query_item
-            )
             semantic_query = plan["semantic_query"]
             filters = plan["filters"]
 
