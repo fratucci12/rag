@@ -114,6 +114,63 @@ class LLMEvaluator:
         return None
 
 
+def _norm_text(s: Optional[str]) -> str:
+    import unicodedata
+
+    s = s or ""
+    return "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c)).lower()
+
+
+def resolve_orgao_nome_from_db(conn, raw_value: str, state_sigla: Optional[str], docs_table: str, fallback_chunks_table: Optional[str] = None) -> Optional[str]:
+    """Resolve o nome canônico de órgão a partir do banco, usando normalização acento/case-insensível em Python."""
+    if not raw_value:
+        return None
+    nf = _norm_text(raw_value)
+    candidates: List[str] = []
+    # 1) Tenta no docs_table
+    try:
+        with conn.cursor() as cur:
+            if state_sigla:
+                cur.execute(
+                    f"SELECT DISTINCT meta->>'orgao_nome' FROM {docs_table} WHERE meta->>'estado_sigla' = %s LIMIT 5000",
+                    [state_sigla],
+                )
+            else:
+                cur.execute(
+                    f"SELECT DISTINCT meta->>'orgao_nome' FROM {docs_table} LIMIT 5000"
+                )
+            candidates = [row[0] for row in cur.fetchall() if row and row[0]]
+    except Exception as e:
+        log("resolve.orgao_nome.docs.error", error=str(e))
+        candidates = []
+
+    # 2) Fallback: tenta em uma tabela de chunks
+    if not candidates and fallback_chunks_table:
+        try:
+            with conn.cursor() as cur:
+                if state_sigla:
+                    cur.execute(
+                        f"SELECT DISTINCT meta->>'orgao_nome' FROM {fallback_chunks_table} WHERE meta->>'estado_sigla' = %s LIMIT 5000",
+                        [state_sigla],
+                    )
+                else:
+                    cur.execute(
+                        f"SELECT DISTINCT meta->>'orgao_nome' FROM {fallback_chunks_table} LIMIT 5000"
+                    )
+                candidates = [row[0] for row in cur.fetchall() if row and row[0]]
+        except Exception as e:
+            log("resolve.orgao_nome.chunks.error", error=str(e))
+            candidates = []
+
+    # Filtra por correspondência normalizada
+    matches = [c for c in candidates if nf in _norm_text(c)]
+    if not matches:
+        return None
+    # Heurística: pega o menor nome que ainda contém o filtro (mais específico)
+    resolved = min(matches, key=lambda x: len(x))
+    return resolved
+
+
 def hyde_generate_text(query: str, model: str = "gpt-3.5-turbo") -> Optional[str]:
     """Gera um texto hipotético (HyDE) a partir da pergunta para melhorar a busca vetorial.
     Se houver falha, retorna None e o chamador pode fazer fallback para a própria query.
@@ -184,14 +241,45 @@ def _build_where_clause_flex(filters: Dict[str, Any]) -> (str, List[Any]):
     return f"WHERE {' AND '.join(where_parts)}", params
 
 
+def _build_where_clause_flex2(filters: Dict[str, Any]) -> (str, List[Any]):
+    """Simpler flexible WHERE builder.
+
+    - orgao_nome: case-insensitive partial match using lower(field) LIKE lower(%value%).
+    - others: exact JSON match via meta @> %s.
+    """
+    if not filters:
+        return "", []
+
+    where_parts: List[str] = []
+    params: List[Any] = []
+
+    for key, value in (filters or {}).items():
+        if key == "orgao_nome" and isinstance(value, str) and value.strip():
+            where_parts.append("(to_tsvector('portuguese', coalesce(meta->>'orgao_nome','')) @@ websearch_to_tsquery('portuguese', %s) OR meta @> %s)")
+            params.append(value.strip())
+            params.append(json.dumps({key: value}))
+        else:
+            where_parts.append("meta @> %s")
+            params.append(json.dumps({key: value}))
+
+    return f"WHERE {' AND '.join(where_parts)}", params
+
+
 def basic_similarity_search(
     cur, query_embedding: list[float], table: str, top_k: int, filters: Dict
 ) -> List[Dict[str, Any]]:
-    where_clause, params = _build_where_clause_flex(filters)
+    where_clause, params = _build_where_clause_flex2(filters)
     query_embedding_str = str(query_embedding)
 
     sql = f"""
-        SELECT text, page_start, page_end, 1 - (embedding <=> %s::vector) AS similarity, chunk_id::text
+        SELECT
+            text,
+            page_start,
+            page_end,
+            1 - (embedding <=> %s::vector) AS similarity,
+            chunk_id::text,
+            meta->>'orgao_nome' AS orgao_nome,
+            meta->>'estado_sigla' AS estado_sigla
         FROM {table}
         {where_clause}
         ORDER BY similarity DESC LIMIT %s
@@ -199,14 +287,21 @@ def basic_similarity_search(
 
     cur.execute(sql, [query_embedding_str] + params + [top_k])
     rows = cur.fetchall()
-    if not rows and filters:
-        # Relax filters if nothing found
+    if not rows and filters and ("orgao_nome" not in filters):
+        # Relax filters if nothing found (but never relax orgao_nome)
         try:
             cur.connection.rollback()
         except Exception:
             pass
         sql_nf = f"""
-            SELECT text, page_start, page_end, 1 - (embedding <=> %s::vector) AS similarity, chunk_id::text
+            SELECT
+                text,
+                page_start,
+                page_end,
+                1 - (embedding <=> %s::vector) AS similarity,
+                chunk_id::text,
+                meta->>'orgao_nome' AS orgao_nome,
+                meta->>'estado_sigla' AS estado_sigla
             FROM {table}
             ORDER BY similarity DESC LIMIT %s
         """
@@ -220,6 +315,8 @@ def basic_similarity_search(
             "page_end": r[2],
             "score": float(r[3]),
             "chunk_id": r[4],
+            "orgao_nome": r[5],
+            "estado_sigla": r[6],
         }
         for r in rows
     ]
@@ -234,7 +331,7 @@ def hybrid_search_rrf(
     filters: Dict,
     k: int = 60,
 ) -> List[Dict[str, Any]]:
-    where_clause, params = _build_where_clause_flex(filters)
+    where_clause, params = _build_where_clause_flex2(filters)
     where_clause_fts = where_clause.replace("WHERE", "AND") if where_clause else ""
 
     # tenta via coluna ts/unaccent (mais rápido e robusto)
@@ -267,7 +364,7 @@ def hybrid_search_rrf(
     vector_results = [(row[0], i + 1) for i, row in enumerate(cur.fetchall())]
 
     # If both empty and filters exist, relax (remove filters) and try again
-    if not keyword_results and not vector_results and filters:
+    if not keyword_results and not vector_results and filters and ("orgao_nome" not in filters):
         try:
             try:
                 cur.connection.rollback()
@@ -315,7 +412,7 @@ def hybrid_search_rrf(
         return []
 
     cur.execute(
-        f"SELECT text, page_start, page_end, chunk_id::text FROM {table} WHERE chunk_id::text = ANY(%s)",
+        f"SELECT text, page_start, page_end, chunk_id::text, meta->>'orgao_nome' AS orgao_nome, meta->>'estado_sigla' AS estado_sigla FROM {table} WHERE chunk_id::text = ANY(%s)",
         (top_ids,),
     )
     results_map = {
@@ -324,6 +421,8 @@ def hybrid_search_rrf(
             "page_start": row[1],
             "page_end": row[2],
             "chunk_id": row[3],
+            "orgao_nome": row[4],
+            "estado_sigla": row[5],
         }
         for row in cur.fetchall()
     }
@@ -582,6 +681,26 @@ def run_tests(
 
             semantic_query = plan["semantic_query"]
             filters = plan["filters"]
+            # Se houver orgao_nome vindo do planner, tenta resolver para o canônico do BD
+            try:
+                docs_table = config["database"]["docs_table"]
+            except Exception:
+                docs_table = "documents"
+            if isinstance(filters, dict) and filters.get("orgao_nome"):
+                resolved = resolve_orgao_nome_from_db(
+                    conn,
+                    str(filters["orgao_nome"]),
+                    filters.get("estado_sigla"),
+                    docs_table,
+                    fallback_chunks_table=(strategy_tables[0] if strategy_tables else None),
+                )
+                if resolved:
+                    log(
+                        "filters.orgao_nome.resolved",
+                        raw=str(filters["orgao_nome"]),
+                        resolved=resolved,
+                    )
+                    filters["orgao_nome"] = resolved
 
             results_for_all_strategies = {}
 
@@ -688,6 +807,17 @@ def run_tests(
                                 cur.connection.rollback()
                             except Exception:
                                 pass
+
+                    # Se houver filtro de orgao_nome, remove resultados cujo meta-orgao não bate
+                    orgao_filter_val = (filters or {}).get("orgao_nome")
+                    if orgao_filter_val:
+                        nf = _norm_text(str(orgao_filter_val))
+                        for mname, rlist in list(methods.items()):
+                            methods[mname] = [
+                                r
+                                for r in (rlist or [])
+                                if _norm_text(str(r.get("orgao_nome"))) and nf in _norm_text(str(r.get("orgao_nome")))
+                            ]
 
                     for method_name, results_list in methods.items():
                         for res in results_list:

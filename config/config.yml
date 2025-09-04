@@ -86,7 +86,7 @@ retrieval_testing:
   rrf_k: 100        # parâmetro K do RRF na busca híbrida
   # Configuração HyDE padrão (pode ser sobrescrita por estratégia)
   hyde:
-    enabled: true
+    enabled: false
     model: "gpt-4o-mini"
   # Lista de métodos a executar; pode ser sobrescrita por estratégia
   methods:

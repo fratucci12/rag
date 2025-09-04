@@ -179,7 +179,9 @@ def split_manifest_into_batches(
             try:
                 entry = json.loads(line)
                 meta_original = entry.get("meta", {})
-                doc_meta_aplainado = _aplainar_e_mapear_meta(meta_original)
+                    doc_meta_aplainado = _aplainar_e_mapear_meta(meta_original)
+                    # Meta a ser gravado em chunks: flatten + original completo
+                    meta_para_chunk = {**(doc_meta_aplainado or {}), "_doc_meta": meta_original or {}}
 
                 for doc_id, pdf_path, is_tmp, pdf_sha in iter_docs_from_entry(entry):
                     upsert_document(
@@ -244,7 +246,7 @@ def split_manifest_into_batches(
                                     "doc_id": doc_id,
                                     "tag": tag,
                                     "tbl": tbl,
-                                    "doc_meta": doc_meta_aplainado,
+                                    "doc_meta": meta_para_chunk,
                                     "chunk_obj": chunk_obj,
                                 }
                             )

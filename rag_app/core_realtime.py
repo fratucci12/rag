@@ -77,6 +77,11 @@ def process_documents_realtime(config: dict):
                     entry = json.loads(line)
                     meta_original = entry.get("meta", {})
                     doc_meta_aplainado = _aplainar_e_mapear_meta(meta_original)
+                    # Guarda o meta original completo junto com os campos aplainados
+                    meta_para_chunk = {
+                        **(doc_meta_aplainado or {}),
+                        "_doc_meta": meta_original or {},
+                    }
 
                     for doc_id, pdf_path, is_tmp, pdf_sha in iter_docs_from_entry(
                         entry
@@ -128,7 +133,7 @@ def process_documents_realtime(config: dict):
                             chunks = chunk_func(pages, **params)
                             novos = filter_new_chunks(cur, tbl, doc_id, tag, chunks, source_filename)
                             for cid, ch_obj in novos:
-                                pendentes_por_tabela[tbl].append((cid, tag, ch_obj, doc_meta_aplainado))
+                                pendentes_por_tabela[tbl].append((cid, tag, ch_obj, meta_para_chunk))
 
                         # Nada novo? segue o baile
                         if not pendentes_por_tabela:
