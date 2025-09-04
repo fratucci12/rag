@@ -154,10 +154,40 @@ def _build_where_clause(filters: Dict[str, Any]) -> (str, List[Any]):
     return f"WHERE {' AND '.join(clauses)}", params
 
 
+def _build_where_clause_flex(filters: Dict[str, Any]) -> (str, List[Any]):
+    """Enhanced WHERE builder with better orgao_nome matching.
+
+    - orgao_nome: case/accent-insensitive partial match using translate+lower and LIKE.
+    - others: exact JSON match via meta @> %s.
+    """
+    if not filters:
+        return "", []
+
+    where_parts: List[str] = []
+    params: List[Any] = []
+
+    from_chars = "ÁÀÃÂÄáàãâäÉÈÊËéèêëÍÌÎÏíìîïÓÒÔÕÖóòôõöÚÙÛÜúùûüÇç"
+    to_chars =   "AAAAAaaaaaEEEEeeeeIIIIiiiiOOOOOoooooUUUUuuuuCc"
+
+    for key, value in (filters or {}).items():
+        if key == "orgao_nome" and isinstance(value, str) and value.strip():
+            norm_field = (
+                f"translate(lower(meta->>'orgao_nome'), '{from_chars}', '{to_chars}')"
+            )
+            norm_param = f"translate(lower(%s), '{from_chars}', '{to_chars}')"
+            where_parts.append(f"{norm_field} LIKE {norm_param}")
+            params.append(f"%{value.strip()}%")
+        else:
+            where_parts.append("meta @> %s")
+            params.append(json.dumps({key: value}))
+
+    return f"WHERE {' AND '.join(where_parts)}", params
+
+
 def basic_similarity_search(
     cur, query_embedding: list[float], table: str, top_k: int, filters: Dict
 ) -> List[Dict[str, Any]]:
-    where_clause, params = _build_where_clause(filters)
+    where_clause, params = _build_where_clause_flex(filters)
     query_embedding_str = str(query_embedding)
 
     sql = f"""
@@ -204,7 +234,7 @@ def hybrid_search_rrf(
     filters: Dict,
     k: int = 60,
 ) -> List[Dict[str, Any]]:
-    where_clause, params = _build_where_clause(filters)
+    where_clause, params = _build_where_clause_flex(filters)
     where_clause_fts = where_clause.replace("WHERE", "AND") if where_clause else ""
 
     # tenta via coluna ts/unaccent (mais rápido e robusto)
